@@ -1,3 +1,5 @@
+"""Inspired from PyG's data class."""
+
 from __future__ import annotations
 import copy
 from collections.abc import Mapping, Sequence
