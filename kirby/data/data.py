@@ -275,7 +275,7 @@ class Data(object):
     def apply(self, func: Callable):
         r"""Applies the function :obj:`func` to all attributes."""
         for key, value in self.__dict__.items():
-            self.key = recursive_apply(value, func)
+            setattr(self, key, recursive_apply(value, func))
         return self
 
     def clone(self):
