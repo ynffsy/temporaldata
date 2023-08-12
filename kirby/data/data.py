@@ -107,7 +107,12 @@ class IrregularTimeSeries(DatumBase):
 
         out = self.__class__.__new__(self.__class__)
         for key, value in self.__dict__.items():
-            out.__dict__[key] = value[idx_l:idx_r].clone()
+            if isinstance(value, Tensor):
+                out.__dict__[key] = value[idx_l:idx_r].clone()
+            elif isinstance(value, np.ndarray):
+                # E.g. array of strings.
+                out.__dict__[key] = value[idx_l:idx_r].copy()
+
 
         out.timestamps = out.timestamps - start
         return out
