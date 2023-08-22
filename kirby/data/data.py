@@ -1,24 +1,27 @@
 """Inspired from PyG's data class."""
 
 from __future__ import annotations
+
 import copy
+import pickle
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import (
     Any,
     Callable,
     Dict,
-    Iterable,
     List,
     NamedTuple,
     Optional,
-    Tuple,
     Union,
 )
 
 import numpy as np
 import torch
 from torch import Tensor
-import pickle
+
+from kirby.taxonomy import Dictable, RecordingTech, StringIntEnum
+
 
 class DatumBase(object):
     @property
@@ -48,8 +51,8 @@ class DatumBase(object):
     def __repr__(self) -> str:
         cls = self.__class__.__name__
         info = [size_repr(k, v, indent=2) for k, v in self.__dict__.items()]
-        info = ',\n'.join(info)
-        return f'{cls}(\n{info}\n)'
+        info = ",\n".join(info)
+        return f"{cls}(\n{info}\n)"
 
     def to_dict(self) -> Dict[str, Any]:
         r"""Returns a dictionary of stored key/value pairs."""
@@ -82,7 +85,7 @@ class IrregularTimeSeries(DatumBase):
     @property
     def attrs(self) -> List[str]:
         r"""Returns all tensor attribute names."""
-        return list(set(self.keys).difference({'timestamps'}))
+        return list(set(self.keys).difference({"timestamps"}))
 
     @property
     def start(self) -> float:
@@ -113,18 +116,19 @@ class IrregularTimeSeries(DatumBase):
                 # E.g. array of strings.
                 out.__dict__[key] = value[idx_l:idx_r].copy()
 
-
         out.timestamps = out.timestamps - start
         return out
-    
+
     def clip(self, start=None, end=None):
-        assert start is not None or end is not None, 'start or/and end must be specified'
+        assert (
+            start is not None or end is not None
+        ), "start or/and end must be specified"
 
         idx_l = idx_r = None
 
         if start is not None:
             idx_l = torch.searchsorted(self.timestamps, start)
-            
+
         if end is not None:
             idx_r = torch.searchsorted(self.timestamps, end)
 
@@ -132,6 +136,46 @@ class IrregularTimeSeries(DatumBase):
         for key, value in self.__dict__.items():
             out.__dict__[key] = value[idx_l:idx_r].clone()
         return out
+
+
+class RegularTimeSeries(IrregularTimeSeries):
+    """A regular time series is the same as a regular time series, but it has a
+    regular sampling rate. This allows for faster indexing and meaningful Fourier
+    operations.
+
+    For now, we simply do a pass-through, but later we will implement faster
+    algorithms.
+    """
+
+    pass
+
+
+@dataclass
+class Channel(Dictable):
+    """Channels are the physical channels used to record the data. Channels are grouped
+    into probes."""
+
+    id: str
+    local_index: int
+
+    # Position relative to the reference location of the probe, in microns.
+    relative_x_um: float
+    relative_y_um: float
+    relative_z_um: float
+
+
+@dataclass
+class Probe(Dictable):
+    """Probes are the physical probes used to record the data."""
+
+    id: str
+    type: RecordingTech
+    area: StringIntEnum
+    lfp_sampling_rate: float
+    wideband_sampling_rate: float
+    waveform_sampling_rate: float
+    waveform_samples: int
+    channels: list[Channel]
 
 
 class Interval(DatumBase):
@@ -150,14 +194,22 @@ class Interval(DatumBase):
             out[key] = value[item]
         return out
 
+
 AttrTensor = Union[Tensor, DatumBase]
 
 
 class Data(object):
-    def __init__(self, *, start:float=None, end:float=None, spikes: Optional[IrregularTimeSeries] = None, **kwargs):
-                 # unit_attr: OptTensor = None,
-                 # x_timestamps: OptTensor = None, x_attr: OptTensor = None,
-                 # y_start: OptTensor = None, y_end: OptTensor = None, y_attr: OptTensor = None,
+    def __init__(
+        self,
+        *,
+        start: Optional[float] = None,
+        end: Optional[float] = None,
+        spikes: Optional[IrregularTimeSeries] = None,
+        **kwargs,
+    ):
+        # unit_attr: OptTensor = None,
+        # x_timestamps: OptTensor = None, x_attr: OptTensor = None,
+        # y_start: OptTensor = None, y_end: OptTensor = None, y_attr: OptTensor = None,
 
         self.start = start
         self.end = end
@@ -213,14 +265,14 @@ class Data(object):
     def __repr__(self) -> str:
         cls = self.__class__.__name__
 
-        info = ''
+        info = ""
         for key, value in self.__dict__.items():
             if isinstance(value, DatumBase):
-                info = info + key + '=' + repr(value) + ',\n'
+                info = info + key + "=" + repr(value) + ",\n"
             elif value is not None:
-                info = info + size_repr(key, value) + ',\n'
+                info = info + size_repr(key, value) + ",\n"
         info = info.rstrip()
-        return f'{cls}(\n{info}\n)'
+        return f"{cls}(\n{info}\n)"
 
     def to_dict(self) -> Dict[str, Any]:
         r"""Returns a dictionary of stored key/value pairs."""
@@ -228,7 +280,7 @@ class Data(object):
 
     def save_to(self, f) -> None:
         r"""Saves self to a file with pickle"""
-        with open(f, 'wb') as output:
+        with open(f, "wb") as output:
             pickle.dump(self.__dict__, output)
 
     @staticmethod
@@ -241,7 +293,9 @@ class Data(object):
 
     def bucketize(self, bucket_size, step, jitter):
         r"""Bucketize the data into buckets of size bucket_size (in seconds))."""
-        assert self.start is not None and self.end is not None, 'start and end must be specified'
+        assert (
+            self.start is not None and self.end is not None
+        ), "start and end must be specified"
 
         # get start and end of buckets
         bucket_start = self.start + np.arange(0, self.end - self.start, step)
@@ -293,20 +347,22 @@ class Data(object):
 
     def to(self, device: Union[int, str], non_blocking: bool = False):
         r"""Performs tensor device conversion for all attributes."""
-        return self.apply(
-            lambda x: x.to(device=device, non_blocking=non_blocking))
+        return self.apply(lambda x: x.to(device=device, non_blocking=non_blocking))
 
     def cpu(self):
         r"""Copies attributes to CPU memory, either for all attributes or only
         the ones given in :obj:`*args`."""
         return self.apply(lambda x: x.cpu())
 
-    def cuda(self, device: Optional[Union[int, str]] = None,
-             non_blocking: bool = False):
+    def cuda(
+        self, device: Optional[Union[int, str]] = None, non_blocking: bool = False
+    ):
         r"""Copies attributes to CUDA memory, either for all attributes ."""
         # Some PyTorch tensor like objects require a default value for `cuda`:
-        device = 'cuda' if device is None else device
-        return self.apply(lambda x: x.cuda(device, non_blocking=non_blocking),)
+        device = "cuda" if device is None else device
+        return self.apply(
+            lambda x: x.cuda(device, non_blocking=non_blocking),
+        )
 
     def pin_memory(self):
         r"""Copies attributes to pinned memory for all attributes."""
@@ -326,8 +382,7 @@ class Data(object):
 
     def requires_grad_(self, requires_grad: bool = True):
         r"""Tracks gradient computation for all attributes."""
-        return self.apply(
-            lambda x: x.requires_grad_(requires_grad=requires_grad))
+        return self.apply(lambda x: x.requires_grad_(requires_grad=requires_grad))
 
     @property
     def is_cuda(self) -> bool:
@@ -340,7 +395,7 @@ class Data(object):
 
 
 def size_repr(key: Any, value: Any, indent: int = 0) -> str:
-    pad = ' ' * indent
+    pad = " " * indent
     if isinstance(value, Tensor) and value.dim() == 0:
         out = value.item()
     elif isinstance(value, Tensor):
@@ -352,25 +407,29 @@ def size_repr(key: Any, value: Any, indent: int = 0) -> str:
     elif isinstance(value, Sequence):
         out = str([len(value)])
     elif isinstance(value, Mapping) and len(value) == 0:
-        out = '{}'
-    elif (isinstance(value, Mapping) and len(value) == 1
-          and not isinstance(list(value.values())[0], Mapping)):
+        out = "{}"
+    elif (
+        isinstance(value, Mapping)
+        and len(value) == 1
+        and not isinstance(list(value.values())[0], Mapping)
+    ):
         lines = [size_repr(k, v, 0) for k, v in value.items()]
-        out = '{ ' + ', '.join(lines) + ' }'
+        out = "{ " + ", ".join(lines) + " }"
     elif isinstance(value, Mapping):
         lines = [size_repr(k, v, indent + 2) for k, v in value.items()]
-        out = '{\n' + ',\n'.join(lines) + '\n' + pad + '}'
+        out = "{\n" + ",\n".join(lines) + "\n" + pad + "}"
     else:
         out = str(value)
-    key = str(key).replace("'", '')
-    return f'{pad}{key}={out}'
+    key = str(key).replace("'", "")
+    return f"{pad}{key}={out}"
+
 
 def recursive_apply(data: Any, func: Callable) -> Any:
     if isinstance(data, Tensor):
         return func(data)
     elif isinstance(data, torch.nn.utils.rnn.PackedSequence):
         return func(data)
-    elif isinstance(data, tuple) and hasattr(data, '_fields'):  # namedtuple
+    elif isinstance(data, tuple) and hasattr(data, "_fields"):  # namedtuple
         return type(data)(*(recursive_apply(d, func) for d in data))
     elif isinstance(data, Sequence) and not isinstance(data, str):
         return [recursive_apply(d, func) for d in data]
