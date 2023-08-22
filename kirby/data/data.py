@@ -150,6 +150,12 @@ class RegularTimeSeries(IrregularTimeSeries):
     pass
 
 
+class Hemisphere(StringIntEnum):
+    UNKNOWN = 0
+    LEFT = 1
+    RIGHT = 2
+
+
 @dataclass
 class Channel(Dictable):
     """Channels are the physical channels used to record the data. Channels are grouped
@@ -163,6 +169,9 @@ class Channel(Dictable):
     relative_y_um: float
     relative_z_um: float
 
+    area: StringIntEnum
+    hemisphere: Hemisphere = Hemisphere.UNKNOWN
+
 
 @dataclass
 class Probe(Dictable):
@@ -170,7 +179,6 @@ class Probe(Dictable):
 
     id: str
     type: RecordingTech
-    area: StringIntEnum
     lfp_sampling_rate: float
     wideband_sampling_rate: float
     waveform_sampling_rate: float
