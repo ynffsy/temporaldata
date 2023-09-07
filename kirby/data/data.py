@@ -147,7 +147,10 @@ class RegularTimeSeries(IrregularTimeSeries):
     algorithms.
     """
 
-    pass
+    @property
+    def sampling_rate(self):
+        return 1 / (self.timestamps[1] - self.timestamps[0])
+
 
 
 class Hemisphere(StringIntEnum):
