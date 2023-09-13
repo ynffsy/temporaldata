@@ -170,10 +170,6 @@ class Interval(DatumBase):
         for key, value in self.__dict__.items():
             if isinstance(value, Tensor):
                 out.__dict__[key] = value[idx_l:idx_r].clone()
-                # all attributes with suffix _time are timestamps and will be 
-                # updated to be relative to the start of the interval
-                if key.endswith("_time"):
-                    out.__dict__[key] = out.__dict__[key] - start
             elif isinstance(value, np.ndarray):
                 # E.g. array of strings.
                 out.__dict__[key] = value[idx_l:idx_r].copy()
