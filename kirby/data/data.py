@@ -120,6 +120,7 @@ class IrregularTimeSeries(DatumBase):
         return out
 
     def clip(self, start=None, end=None):
+        r"""While :meth:`slice` resets the timestamps, this method does not."""
         assert (
             start is not None or end is not None
         ), "start or/and end must be specified"
@@ -135,6 +136,50 @@ class IrregularTimeSeries(DatumBase):
         out = self.__class__.__new__(self.__class__)
         for key, value in self.__dict__.items():
             out.__dict__[key] = value[idx_l:idx_r].clone()
+        return out
+
+
+class Interval(DatumBase):
+    def __init__(self, start, end, **kwargs):
+        self.start = start
+        self.end = end
+
+        # these variables will hold the original start and end times 
+        # and won't be modified when slicing
+        self.original_start = start
+        self.original_end = end
+
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+    def __len__(self):
+        return self.start.size(0)
+
+    def __getitem__(self, item):
+        out = {}
+        for key, value in self.__dict__.items():
+            out[key] = value[item]
+        return out
+    
+    def slice(self, start, end):
+        # torch.searchsorted uses binary search
+        idx_l = torch.searchsorted(self.start, start)
+        idx_r = torch.searchsorted(self.end, end)
+
+        out = self.__class__.__new__(self.__class__)
+        for key, value in self.__dict__.items():
+            if isinstance(value, Tensor):
+                out.__dict__[key] = value[idx_l:idx_r].clone()
+                # all attributes with suffix _time are timestamps and will be 
+                # updated to be relative to the start of the interval
+                if key.endswith("_time"):
+                    out.__dict__[key] = out.__dict__[key] - start
+            elif isinstance(value, np.ndarray):
+                # E.g. array of strings.
+                out.__dict__[key] = value[idx_l:idx_r].copy()
+        
+        out.start = out.start - start
+        out.end = out.end - start
         return out
 
 
@@ -189,23 +234,6 @@ class Probe(Dictable):
     channels: list[Channel]
 
 
-class Interval(DatumBase):
-    def __init__(self, start, end, **kwargs):
-        self.start = start
-        self.end = end
-        for key, value in kwargs.items():
-            setattr(self, key, value)
-
-    def __len__(self):
-        return self.start.size(0)
-
-    def __getitem__(self, item):
-        out = {}
-        for key, value in self.__dict__.items():
-            out[key] = value[item]
-        return out
-
-
 AttrTensor = Union[Tensor, DatumBase]
 
 
@@ -225,6 +253,11 @@ class Data(object):
         self.start = start
         self.end = end
 
+        # these variables will hold the original start and end times 
+        # and won't be modified when slicing
+        self.original_start = start
+        self.original_end = end
+
         if spikes is not None:
             self.spikes = spikes
 
@@ -235,7 +268,7 @@ class Data(object):
         out = self.__class__.__new__(self.__class__)
 
         for key, value in self.__dict__.items():
-            if isinstance(value, IrregularTimeSeries):
+            if isinstance(value, IrregularTimeSeries, RegularTimeSeries, Interval):
                 out.__dict__[key] = value.slice(start, end)
             else:
                 out.__dict__[key] = copy.copy(value)
