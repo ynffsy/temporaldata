@@ -106,7 +106,7 @@ class IrregularTimeSeries(DatumBase):
 
         # torch.searchsorted uses binary search
         idx_l = torch.searchsorted(self.timestamps, start)
-        idx_r = torch.searchsorted(self.timestamps, end)
+        idx_r = torch.searchsorted(self.timestamps, end, right=True)
 
         out = self.__class__.__new__(self.__class__)
         for key, value in self.__dict__.items():
@@ -131,7 +131,7 @@ class IrregularTimeSeries(DatumBase):
             idx_l = torch.searchsorted(self.timestamps, start)
 
         if end is not None:
-            idx_r = torch.searchsorted(self.timestamps, end)
+            idx_r = torch.searchsorted(self.timestamps, end, right=True)
 
         out = self.__class__.__new__(self.__class__)
         for key, value in self.__dict__.items():
@@ -164,7 +164,7 @@ class Interval(DatumBase):
     def slice(self, start, end):
         # torch.searchsorted uses binary search
         idx_l = torch.searchsorted(self.start, end)  # anything that starts before the end of the slicing window
-        idx_r = torch.searchsorted(self.end, start)  # anything that will end after the start of the slicing window
+        idx_r = torch.searchsorted(self.end, start, right=True)  # anything that will end after the start of the slicing window
 
         out = self.__class__.__new__(self.__class__)
         for key, value in self.__dict__.items():
