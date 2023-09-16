@@ -264,7 +264,7 @@ class Data(object):
         out = self.__class__.__new__(self.__class__)
 
         for key, value in self.__dict__.items():
-            if isinstance(value, [IrregularTimeSeries, RegularTimeSeries, Interval]):
+            if isinstance(value, (IrregularTimeSeries, RegularTimeSeries, Interval)):
                 out.__dict__[key] = value.slice(start, end)
             else:
                 out.__dict__[key] = copy.copy(value)
