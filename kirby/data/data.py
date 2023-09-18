@@ -144,11 +144,6 @@ class Interval(DatumBase):
         self.start = start
         self.end = end
 
-        # these variables will hold the original start and end times 
-        # and won't be modified when slicing
-        self.original_start = start
-        self.original_end = end
-
         for key, value in kwargs.items():
             setattr(self, key, value)
 
@@ -163,8 +158,8 @@ class Interval(DatumBase):
     
     def slice(self, start, end):
         # torch.searchsorted uses binary search
-        idx_l = torch.searchsorted(self.start, end)  # anything that starts before the end of the slicing window
-        idx_r = torch.searchsorted(self.end, start, right=True)  # anything that will end after the start of the slicing window
+        idx_l = torch.searchsorted(self.end, start)  # anything that starts before the end of the slicing window
+        idx_r = torch.searchsorted(self.start, end, right=True)  # anything that will end after the start of the slicing window
 
         out = self.__class__.__new__(self.__class__)
         for key, value in self.__dict__.items():
@@ -268,9 +263,14 @@ class Data(object):
                 out.__dict__[key] = value.slice(start, end)
             else:
                 out.__dict__[key] = copy.copy(value)
+        
+        # keep track of the original start and end times
+        out.original_start = self.original_start + start - self.start 
+        out.original_end = self.original_end + end - self.end
 
-        out.start = start
-        out.end = end
+        # update the start and end times relative to the new slice
+        out.start = torch.tensor(0.)
+        out.end = end - start
         return out
 
     def slice_along_fixed(self, key, start, length, offset=0):
