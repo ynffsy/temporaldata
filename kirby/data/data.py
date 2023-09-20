@@ -75,8 +75,27 @@ class IrregularTimeSeries(DatumBase):
         super().__init__()
 
         self.timestamps = timestamps
+        assert self.sorted, "timestamps must be sorted"
         for key, value in kwargs.items():
             setattr(self, key, value)
+
+    def __setattr__(self, name, value):
+        super(IrregularTimeSeries, self).__setattr__(name, value)
+        if name == "timestamps":
+            # timestamps has been updated, we no longer know whether it is sorted or not
+            self._sorted = None
+
+    @property
+    def sorted(self):
+        # check if we already know that the sequence is sorted
+        if self._sorted is None:
+            self._sorted = (
+                torch.all(self.timestamps[1:] >= self.timestamps[:-1])
+                .detach()
+                .cpu()
+                .item()
+            )
+        return self._sorted
 
     def __len__(self) -> int:
         r"""Returns the number of graph attributes."""
@@ -102,6 +121,7 @@ class IrregularTimeSeries(DatumBase):
         raise NotImplementedError
 
     def slice(self, start, end):
+        assert self.sorted, "Timestamps must be sorted"
         # todo: maybe can still speed up with dict-lookup indexing
 
         # torch.searchsorted uses binary search
@@ -115,6 +135,9 @@ class IrregularTimeSeries(DatumBase):
             elif isinstance(value, np.ndarray):
                 # E.g. array of strings.
                 out.__dict__[key] = value[idx_l:idx_r].copy()
+            elif isinstance(value, list):
+                # e.g. lists of names.
+                out.__dict__[key] = value[idx_l:idx_r]
 
         out.timestamps = out.timestamps - start
         return out
@@ -140,7 +163,7 @@ class IrregularTimeSeries(DatumBase):
 
 
 class Interval(DatumBase):
-    def __init__(self, start, end, **kwargs):
+    def __init__(self, start: torch.Tensor, end: torch.Tensor, **kwargs):
         self.start = start
         self.end = end
 
@@ -155,11 +178,15 @@ class Interval(DatumBase):
         for key, value in self.__dict__.items():
             out[key] = value[item]
         return out
-    
+
     def slice(self, start, end):
         # torch.searchsorted uses binary search
-        idx_l = torch.searchsorted(self.end, start)  # anything that starts before the end of the slicing window
-        idx_r = torch.searchsorted(self.start, end, right=True)  # anything that will end after the start of the slicing window
+        idx_l = torch.searchsorted(
+            self.end, start
+        )  # anything that starts before the end of the slicing window
+        idx_r = torch.searchsorted(
+            self.start, end, right=True
+        )  # anything that will end after the start of the slicing window
 
         out = self.__class__.__new__(self.__class__)
         for key, value in self.__dict__.items():
@@ -168,7 +195,10 @@ class Interval(DatumBase):
             elif isinstance(value, np.ndarray):
                 # E.g. array of strings.
                 out.__dict__[key] = value[idx_l:idx_r].copy()
-        
+            elif isinstance(value, list):
+                # e.g. lists of names.
+                out.__dict__[key] = value[idx_l:idx_r]
+
         out.start = out.start - start
         out.end = out.end - start
         return out
@@ -186,7 +216,6 @@ class RegularTimeSeries(IrregularTimeSeries):
     @property
     def sampling_rate(self):
         return 1 / (self.timestamps[1] - self.timestamps[0])
-
 
 
 class Hemisphere(StringIntEnum):
@@ -244,7 +273,7 @@ class Data(object):
         self.start = start
         self.end = end
 
-        # these variables will hold the original start and end times 
+        # these variables will hold the original start and end times
         # and won't be modified when slicing
         self.original_start = start
         self.original_end = end
@@ -263,13 +292,13 @@ class Data(object):
                 out.__dict__[key] = value.slice(start, end)
             else:
                 out.__dict__[key] = copy.copy(value)
-        
+
         # keep track of the original start and end times
-        out.original_start = self.original_start + start - self.start 
+        out.original_start = self.original_start + start - self.start
         out.original_end = self.original_end + end - self.end
 
         # update the start and end times relative to the new slice
-        out.start = torch.tensor(0.)
+        out.start = torch.tensor(0.0)
         out.end = end - start
         return out
 
