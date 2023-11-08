@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import pickle
 from collections.abc import Mapping, Sequence
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -75,7 +76,7 @@ class IrregularTimeSeries(DatumBase):
         super().__init__()
 
         self.timestamps = timestamps
-        assert self.sorted, "timestamps must be sorted"
+
         for key, value in kwargs.items():
             setattr(self, key, value)
 
@@ -84,6 +85,10 @@ class IrregularTimeSeries(DatumBase):
         if name == "timestamps":
             # timestamps has been updated, we no longer know whether it is sorted or not
             self._sorted = None
+            # timestamps has been updated, any precomputed index dict are no longer valid
+            for key in self.attrs:
+                if key.endswith("_index_dict"):
+                    delattr(self, key)
 
     @property
     def sorted(self):
@@ -114,15 +119,21 @@ class IrregularTimeSeries(DatumBase):
     def end(self) -> float:
         return torch.max(self.timestamps).item()
 
-    def validate(self):
-        pass
-
-    def is_monotonic(self):
-        raise NotImplementedError
+    def sort(self):
+        r"""Sorts the timestamps."""
+        if not self.sorted:
+            sorted_indices = torch.argsort(self.timestamps)
+            for key, value in self.__dict__.items():
+                if isinstance(value, Tensor):
+                    self.__dict__[key] = value[sorted_indices]
+        self._sorted = True
 
     def slice(self, start, end):
-        assert self.sorted, "Timestamps must be sorted"
+        # assert self.sorted, "Timestamps must be sorted"
         # todo: maybe can still speed up with dict-lookup indexing
+
+        if not self.sorted:
+            self.sort()
 
         # torch.searchsorted uses binary search
         idx_l = torch.searchsorted(self.timestamps, start)
@@ -144,6 +155,8 @@ class IrregularTimeSeries(DatumBase):
 
     def clip(self, start=None, end=None):
         r"""While :meth:`slice` resets the timestamps, this method does not."""
+        if not self.sorted:
+            self.sort()
         assert (
             start is not None or end is not None
         ), "start or/and end must be specified"
@@ -160,6 +173,20 @@ class IrregularTimeSeries(DatumBase):
         for key, value in self.__dict__.items():
             out.__dict__[key] = value[idx_l:idx_r].clone()
         return out
+
+    def precompute_index_map(self, field):
+        r"""Precompute masks for the given field."""
+        # todo can np.unique be applied to tensors?
+        unique_values, indices = np.unique(getattr(self, field), return_inverse=True)
+        index_dict = {value: [] for value in unique_values}
+
+        for i, value in enumerate(indices):
+            index_dict[unique_values[value]].append(i)
+
+        for key, value in index_dict.items():
+            index_dict[key] = torch.tensor(value, dtype=torch.long)
+
+        setattr(self, f"{field}_index_dict", index_dict)
 
 
 class Interval(DatumBase):
