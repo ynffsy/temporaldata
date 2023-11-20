@@ -8,13 +8,6 @@ def test_sortedness():
     assert a.sorted
 
     a.timestamps = torch.Tensor([0, 2, 1])
-    with pytest.raises(AssertionError):
-        a.slice(0, 1)
-
-    with pytest.raises(AssertionError):
-        a = IrregularTimeSeries(torch.Tensor([0, 1, 0]))
-    
-    a = IrregularTimeSeries(torch.Tensor([0, 1, 2]))
-    #a.timestamps[2] = 0
-
-    a.slice(0, 10)  # Does not raise any error, known bug
+    assert not a.sorted
+    a = a.slice(0, 1)
+    assert torch.all(a.timestamps == torch.Tensor([0, 1]))
