@@ -18,6 +18,7 @@ from typing import (
 )
 
 import numpy as np
+import pandas as pd
 import torch
 from torch import Tensor
 
@@ -176,6 +177,9 @@ class IrregularTimeSeries(DatumBase):
 
 
 class Interval(DatumBase):
+    r"""An interval object is a set of time intervals each defined by a start time and
+    an end time."""
+
     def __init__(self, start: torch.Tensor, end: torch.Tensor, **kwargs):
         self.start = start
         self.end = end
@@ -186,11 +190,42 @@ class Interval(DatumBase):
     def __len__(self):
         return self.start.size(0)
 
-    def __getitem__(self, item):
-        out = {}
-        for key, value in self.__dict__.items():
-            out[key] = value[item]
-        return out
+    def __getitem__(self, item: Union[str, int, slice, list, Tensor, np.ndarray]):
+        r"""Allows indexing of the :obj:`Interval` object.
+
+        It can be indexed with:
+            - a string, which will return the corresponding attribute.
+            - an integer, which will return a new :obj:`Interval` object with a single
+            element and its corresponding attributes.
+            - a slice, which will return a new :obj:`Interval` object with the selected
+            elements and their corresponding attributes.
+            - a list of integers, which will return a new :obj:`Interval` object with
+            the selected elements and their corresponding attributes.
+            - a binary mask, which will return a new :obj:`Interval` object with the
+            selected elements and their corresponding attributes.
+
+        Example:
+            >> import torch
+            >> from kirby.data import Interval
+            >> interval = Interval(torch.tensor([0, 1, 2]), torch.tensor([1, 2, 3]))
+            >> interval[0]
+            Interval(start=tensor([0]), end=tensor([1]))
+            >> interval[0:2]
+            Interval(start=tensor([0, 1]), end=tensor([1, 2]))
+            >> interval[[0, 2]]
+            Interval(start=tensor([0, 2]), end=tensor([1, 3]))
+            >> interval[[True, False, True]]
+            Interval(start=tensor([0, 2]), end=tensor([1, 3]))
+        """
+        if isinstance(item, str):
+            # return the corresponding attribute
+            return getattr(self, item)
+        else:
+            out = self.__class__.__new__(self.__class__)
+            for key, value in self.__dict__.items():
+                out.__dict__[key] = value[item]
+
+            return out
 
     def slice(self, start, end):
         # torch.searchsorted uses binary search
@@ -215,6 +250,122 @@ class Interval(DatumBase):
         out.start = out.start - start
         out.end = out.end - start
         return out
+
+    def split(
+        self,
+        sizes: Union[List[int], List[float]],
+        *,
+        shuffle=False,
+        random_seed=None,
+    ):
+        r"""Splits the set of intervals into multiple subsets. This will
+        return a number of new :obj:`Interval` objects equal to the number of elements 
+        in `sizes`. If `shuffle` is set to :obj:`True`, the intervals will be shuffled 
+        before splitting.
+
+        Args:
+            sizes: A list of integers or floats. If integers, the list must sum to the
+            number of intervals. If floats, the list must sum to 1.0.
+            shuffle: If :obj:`True`, the intervals will be shuffled before splitting.
+            random_seed: The random seed to use for shuffling.
+        
+        .. note::
+            This method will not guarantee that the resulting sets will be disjoint, if
+            the intervals are not already disjoint.
+        """
+        
+        assert len(sizes) > 1, "must split into at least two sets"
+        assert len(sizes) < len(self), f"cannot split {len(self)} intervals into "
+        " {len(sizes)} sets"
+        
+        # if sizes are floats, convert them to integers
+        if all(isinstance(x, float) for x in sizes):
+            assert sum(sizes) == 1.0, "sizes must sum to 1.0"
+            sizes = [round(x * len(self)) for x in sizes]
+            # there might be rounding errors
+            # make sure that the sum of sizes is still equal to the number of intervals
+            largest = np.argmax(sizes)
+            sizes[largest] = len(self) - (sum(sizes) - sizes[largest])
+        elif all(isinstance(x, int) for x in sizes):
+            assert sum(sizes) == len(self), "sizes must sum to the number of intervals"
+        else:
+            raise ValueError("sizes must be either all floats or all integers")
+
+        # shuffle
+        if shuffle:
+            generator = torch.Generator()
+            generator.manual_seed(random_seed)
+            idx = torch.randperm(len(self), generator=generator)
+        else:
+            idx = torch.arange(len(self))
+
+        # split
+        splits = []
+        start = 0
+        for size in sizes:
+            splits.append(self[idx[start : start + size]])
+            start += size
+        
+        return splits
+
+    @classmethod
+    def linspace(cls, start: float, end: float, steps: int):
+        """Create a regular interval with a given number of samples."""
+        timestamps = torch.linspace(start, end, steps + 1)
+        return cls(
+            start=timestamps[:-1],
+            end=timestamps[1:],
+        )
+
+    @classmethod
+    def from_dataframe(cls, df):
+        r"""Create an :obj:`Interval` object from a Pandas dataframe. The dataframe
+        must have a start time and end time columns. The names of these columns need
+        to be "start" and "end" (use `pd.Dataframe.rename` if needed).
+
+        Columns that are numeric will be converted to tensors. Columns that are
+        ndarrays will be stacked if they share the same size. Any other column type will
+        be skipped.
+
+        # todo: add support for string ndarrays
+
+        Raises:
+            AssertionError: if the start or end column is not found in the dataframe.
+            AssertionError: if a column is specified in `kwargs` but is not found in
+            the dataframe.
+            Warning: if a column is not numeric or an ndarray.
+        """
+        data = {}
+
+        assert "start" in df.columns, f"Column 'start' not found in dataframe."
+        assert "end" in df.columns, f"Column 'end' not found in dataframe."
+
+        for column in df.columns:
+            if pd.api.types.is_numeric_dtype(df[column]):
+                # Directly convert numeric columns to numpy arrays
+                data[column] = torch.tensor(df[column].to_numpy())
+            elif df[column].apply(lambda x: isinstance(x, np.ndarray)).all():
+                # Check if all ndarrays in the column have the same shape
+                ndarrays = df[column]
+                first_shape = ndarrays.iloc[0].shape
+                if all(
+                    arr.shape == first_shape
+                    for arr in ndarrays
+                    if isinstance(arr, np.ndarray)
+                ):
+                    # If all elements in the column are ndarrays with the same shape,
+                    # stack them
+                    data[column] = torch.tensor(np.stack(df[column].values))
+                else:
+                    logging.warn(
+                        f"The ndarrays in column '{column}' do not all have the "
+                        "same shape."
+                    )
+            else:
+                logging.warn(
+                    f"Unable to convert column '{column}' to a tensor. Skipping."
+                )
+        return cls(**data)
 
 
 class RegularTimeSeries(IrregularTimeSeries):
