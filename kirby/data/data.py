@@ -174,20 +174,6 @@ class IrregularTimeSeries(DatumBase):
             out.__dict__[key] = value[idx_l:idx_r].clone()
         return out
 
-    def precompute_index_map(self, field):
-        r"""Precompute masks for the given field."""
-        # todo can np.unique be applied to tensors?
-        unique_values, indices = np.unique(getattr(self, field), return_inverse=True)
-        index_dict = {value: [] for value in unique_values}
-
-        for i, value in enumerate(indices):
-            index_dict[unique_values[value]].append(i)
-
-        for key, value in index_dict.items():
-            index_dict[key] = torch.tensor(value, dtype=torch.long)
-
-        setattr(self, f"{field}_index_dict", index_dict)
-
 
 class Interval(DatumBase):
     def __init__(self, start: torch.Tensor, end: torch.Tensor, **kwargs):
