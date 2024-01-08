@@ -416,6 +416,7 @@ class Probe(Dictable):
     waveform_sampling_rate: float
     waveform_samples: int
     channels: list[Channel]
+    ecog_sampling_rate: float = 0.
 
 
 AttrTensor = Union[Tensor, DatumBase]
