@@ -1,44 +1,45 @@
 import pytest
-import torch
+import numpy as np
 from kirby.data import Interval
 
 
 def test_indexing():
-    interval = Interval(start=torch.tensor([0, 1, 2]), end=torch.tensor([1, 2, 3]))
+    # same code but with numpy arrays
+    interval = Interval(start=np.array([0, 1, 2]), end=np.array([1, 2, 3]))
 
     # Test single index
     result = interval[0]
-    expected = Interval(torch.tensor(0), torch.tensor(1))
-    assert torch.equal(result.start, expected.start) and torch.equal(
+    expected = Interval(np.array([0]), np.array([1]))
+    assert np.allclose(result.start, expected.start) and np.allclose(
         result.end, expected.end
     )
 
     # Test slice indexing
     result = interval[0:2]
-    expected = Interval(torch.tensor([0, 1]), torch.tensor([1, 2]))
-    assert torch.equal(result.start, expected.start) and torch.equal(
+    expected = Interval(np.array([0, 1]), np.array([1, 2]))
+    assert np.allclose(result.start, expected.start) and np.allclose(
         result.end, expected.end
     )
 
     # Test list indexing
     result = interval[[0, 2]]
-    expected = Interval(torch.tensor([0, 2]), torch.tensor([1, 3]))
-    assert torch.equal(result.start, expected.start) and torch.equal(
+    expected = Interval(np.array([0, 2]), np.array([1, 3]))
+    assert np.allclose(result.start, expected.start) and np.allclose(
         result.end, expected.end
     )
 
     # Test boolean indexing
     result = interval[[True, False, True]]
-    expected = Interval(torch.tensor([0, 2]), torch.tensor([1, 3]))
-    assert torch.equal(result.start, expected.start) and torch.equal(
+    expected = Interval(np.array([0, 2]), np.array([1, 3]))
+    assert np.allclose(result.start, expected.start) and np.allclose(
         result.end, expected.end
     )
 
 
 def test_linspace():
     result = Interval.linspace(0, 1, 10)
-    expected = Interval(torch.arange(0, 1.0, 0.1), torch.arange(0.1, 1.1, 0.1))
-    assert torch.equal(result.start, expected.start) and torch.equal(
+    expected = Interval(np.arange(0, 1.0, 0.1), np.arange(0.1, 1.1, 0.1))
+    assert np.allclose(result.start, expected.start) and np.allclose(
         result.end, expected.end
     )
 
@@ -55,7 +56,7 @@ def test_split():
     ]
     assert len(result) == len(expected)
     for i in range(len(result)):
-        assert torch.allclose(result[i].start, expected[i].start) and torch.allclose(
+        assert np.allclose(result[i].start, expected[i].start) and np.allclose(
             result[i].end, expected[i].end
         )
 
@@ -64,7 +65,7 @@ def test_split():
     expected = [Interval.linspace(0, 0.8, 8), Interval.linspace(0.8, 1, 2)]
     assert len(result) == len(expected)
     for i in range(len(result)):
-        assert torch.allclose(result[i].start, expected[i].start) and torch.allclose(
+        assert np.allclose(result[i].start, expected[i].start) and np.allclose(
             result[i].end, expected[i].end
         )
 
@@ -74,16 +75,19 @@ def test_split():
     print(result[0].end, result[1].end)
     expected = [
         Interval(
-            start=torch.tensor([0.2000, 0.6000, 0.1000, 0.8000, 0.4000]),
-            end=torch.tensor([0.3000, 0.7000, 0.2000, 0.9000, 0.5000]),
+            start=np.array([0.5000, 0.6000, 0.0000, 0.7000, 0.3000]),
+            end=np.array([0.6000, 0.7000, 0.1000, 0.8000, 0.4000]),
         ),
         Interval(
-            start=torch.tensor([0.5000, 0.0000, 0.9000, 0.3000, 0.7000]),
-            end=torch.tensor([0.6000, 0.1000, 1.0000, 0.4000, 0.8000]),
+            start=np.array([0.2000, 0.4000, 0.9000, 0.1000, 0.8000]),
+            end=np.array([0.3000, 0.5000, 1.0000, 0.2000, 0.9000]),
         ),
     ]
     assert len(result) == len(expected)
     for i in range(len(result)):
-        assert torch.allclose(result[i].start, expected[i].start) and torch.allclose(
+        assert np.allclose(result[i].start, expected[i].start) and np.allclose(
             result[i].end, expected[i].end
+        ), (
+            f"result: {result[i].start} {result[i].end} "
+            f"expected: {expected[i].start} {expected[i].end}"
         )

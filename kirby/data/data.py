@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import pickle
 from collections.abc import Mapping, Sequence
 from collections import defaultdict
 from dataclasses import dataclass
@@ -12,32 +11,62 @@ from typing import (
     Callable,
     Dict,
     List,
+    Tuple,
     NamedTuple,
     Optional,
     Union,
 )
 import logging
 
+import h5py
 import numpy as np
 import pandas as pd
 import torch
-from torch import Tensor
+
 
 from kirby.taxonomy import Dictable, RecordingTech, StringIntEnum
 
 
-class DatumBase(object):
+class ArrayDict(object):
+    r"""A dictionary of arrays that share the same first dimension.
+
+    .. note::
+        Private attributes (starting with an underscore) do not need to be arrays, or
+        have the same first dimension as the other attributes.
+    """
+
     @property
     def keys(self) -> List[str]:
         r"""Returns a list of all attribute names."""
-        return list(self.__dict__.keys())
+        return [x for x in self.__dict__.keys() if not x.startswith('_')]
+
+    def _maybe_first_dim(self):
+        r"""If `ArrayDict` has at least one attribute, returns the first dimension of
+        the first attribute. Otherwise, returns :obj:`None`."""
+        if len(self.keys) == 0:
+            return None
+        else:
+            return self.__dict__[self.keys[0]].shape[0]
+
+    def __setattr__(self, name, value):
+        if not name.startswith("_"):
+            # only ndarrays are accepted
+            assert isinstance(value, np.ndarray) or isinstance(
+                value, h5py.Dataset
+            ), f"{name} must be a numpy array, got object of type {type(value)}"
+
+            first_dim = self._maybe_first_dim()
+            if first_dim is not None and value.shape[0] != first_dim:
+                raise ValueError(
+                    f"All elements of {self.__class__.__name__} must have the same "
+                    f"first dimension. The first dimension of {name} is "
+                    f"{value.shape[0]} but must be {first_dim}."
+                )
+        super(ArrayDict, self).__setattr__(name, value)
 
     def __contains__(self, key: str) -> bool:
         r"""Returns :obj:`True` if the attribute :obj:`key` is present in the data."""
         return key in self.keys
-
-    def __len__(self) -> int:
-        raise NotImplementedError
 
     def __copy__(self):
         out = self.__class__.__new__(self.__class__)
@@ -53,28 +82,33 @@ class DatumBase(object):
 
     def __repr__(self) -> str:
         cls = self.__class__.__name__
-        info = [size_repr(k, v, indent=2) for k, v in self.__dict__.items()]
+        info = [size_repr(k, getattr(self, k), indent=2) for k in self.keys]
         info = ",\n".join(info)
         return f"{cls}(\n{info}\n)"
 
-    def to_dict(self) -> Dict[str, Any]:
-        r"""Returns a dictionary of stored key/value pairs."""
-        raise NotImplementedError
 
-    def to_namedtuple(self) -> NamedTuple:
-        r"""Returns a :obj:`NamedTuple` of stored key/value pairs."""
-        raise NotImplementedError
+class IrregularTimeSeries(ArrayDict):
+    r"""An irregular time series is defined by a set of timestamps and a set of
+    attributes that must share the same first dimension as the timestamps.
+    The timestamps are not necessarily regularly sampled.
 
-    @property
-    def attrs(self) -> List[str]:
-        raise NotImplementedError
+    Args:
+        timestamps: an array of timestamps of shape (N,).
+        timekeys: a list of strings that specify which attributes are time-based
+            attributes.
+        **kwargs: Arbitrary keyword arguments where the values are arbitrary
+            multi-dimensional (2d, 3d, ..., nd) arrays with shape (N, *).
+    """
+    _lazy = False
+    _sorted = None
 
-    def validate(self):
-        raise NotImplementedError
-
-
-class IrregularTimeSeries(DatumBase):
-    def __init__(self, timestamps: Tensor, **kwargs):
+    def __init__(
+        self,
+        timestamps: Union[np.ndarray, h5py.Dataset],
+        *,
+        timekeys: List[str] = ["timestamps"],
+        **kwargs: Dict[str, Union[np.ndarray, h5py.Dataset]],
+    ):
         super().__init__()
 
         self.timestamps = timestamps
@@ -82,116 +116,251 @@ class IrregularTimeSeries(DatumBase):
         for key, value in kwargs.items():
             setattr(self, key, value)
 
+        if "timestamps" not in timekeys:
+            timekeys.append("timestamps")
+
+        for key in timekeys:
+            assert key in self.keys, f"Time attribute {key} does not exist."
+
+        self._timekeys = timekeys
+
     def __setattr__(self, name, value):
         super(IrregularTimeSeries, self).__setattr__(name, value)
         if name == "timestamps":
             # timestamps has been updated, we no longer know whether it is sorted or not
             self._sorted = None
-            # timestamps has been updated, any precomputed index dict are no longer valid
-            for key in self.attrs:
-                if key.endswith("_index_dict"):
-                    delattr(self, key)
+            self._start = None
+            self._end = None
 
     @property
     def sorted(self):
         # check if we already know that the sequence is sorted
-        if self._sorted is None:
-            self._sorted = (
-                torch.all(self.timestamps[1:] >= self.timestamps[:-1])
-                .detach()
-                .cpu()
-                .item()
-            )
+        # if lazy loading, we'll have to skip this check
+        if self._sorted is None and not self._lazy:
+            self._sorted = np.all(self.timestamps[1:] >= self.timestamps[:-1])
         return self._sorted
 
     def __len__(self) -> int:
-        r"""Returns the number of graph attributes."""
-        return self.timestamps.size(0)
-
-    @property
-    def attrs(self) -> List[str]:
-        r"""Returns all tensor attribute names."""
-        return list(set(self.keys).difference({"timestamps"}))
+        r"""Returns the number of time points."""
+        return self.timestamps.shape[0]
 
     @property
     def start(self) -> float:
-        return torch.min(self.timestamps).item()
+        if self._lazy and self._start is None:
+            raise ValueError("Cannot compute start time of lazy time series.")
+
+        if self._start is None:
+            if self.sorted:
+                self._start = self.timestamps[0]
+            else:
+                self._start = np.min(self.timestamps)
+
+        return self._start
 
     @property
     def end(self) -> float:
-        return torch.max(self.timestamps).item()
+        if self._lazy and self._end is None:
+            raise ValueError("Cannot compute end time of lazy time series.")
+
+        if self._end is None:
+            if self.sorted:
+                self._end = self.timestamps[-1]
+            else:
+                self._end = np.max(self.timestamps)
+
+        return self._end
 
     def sort(self):
         r"""Sorts the timestamps."""
+        if self._lazy:
+            raise ValueError("Cannot sort lazy time series.")
+
         if not self.sorted:
-            sorted_indices = torch.argsort(self.timestamps)
-            for key, value in self.__dict__.items():
-                if isinstance(value, Tensor):
-                    self.__dict__[key] = value[sorted_indices]
+            sorted_indices = np.argsort(self.timestamps)
+            for key in self.keys:
+                self.__dict__[key] = self.__dict__[key][sorted_indices]
         self._sorted = True
 
-    def slice(self, start, end):
-        # assert self.sorted, "Timestamps must be sorted"
-        # todo: maybe can still speed up with dict-lookup indexing
+    def slice(self, start: float, end: float, request_keys: Optional[List[str]] = None):
+        if request_keys is None:
+            request_keys = self.keys
 
+        assert "timestamps" in request_keys
+
+        if not self._lazy:
+            # the data is in memory
+            if not self.sorted:
+                self.sort()
+
+            idx_l = np.searchsorted(self.timestamps, start)
+            idx_r = np.searchsorted(self.timestamps, end, side="right")
+
+            out = self.__class__.__new__(self.__class__)
+            out._timekeys = self._timekeys
+
+            for key in self.keys:
+                if key in request_keys:
+                    out.__dict__[key] = self.__dict__[key][idx_l:idx_r].copy()
+
+            for key in self._timekeys:
+                if key in request_keys:
+                    out.__dict__[key] = out.__dict__[key] - start
+            return out
+        else:
+            # lazy loading, we will use the precomputed grid to extract the chunk of
+            # data that we need
+            start_closest_sec_idx = np.clip(
+                np.floor(start - self.start).astype(int),
+                0,
+                len(self._timestamp_indices_1s) - 1,
+            )
+            end_closest_sec_idx = np.clip(
+                np.ceil(end - self.start).astype(int),
+                0,
+                len(self._timestamp_indices_1s) - 1,
+            )
+
+            idx_l = self._timestamp_indices_1s[start_closest_sec_idx]
+            idx_r = self._timestamp_indices_1s[end_closest_sec_idx]
+
+            out = self.__class__.__new__(self.__class__)
+            out._timekeys = self._timekeys
+            out._sorted = True
+
+            for key in self.keys:
+                if key in request_keys:
+                    out.__dict__[key] = self.__dict__[key][idx_l:idx_r]
+
+            # the slice we get is only precise to the 1sec, so we re-slice
+            return out.slice(start, end)
+
+    def to_hdf5(self, file):
         if not self.sorted:
+            logging.warn("time series is not sorted, sorting before saving to h5")
             self.sort()
 
-        # torch.searchsorted uses binary search
-        idx_l = torch.searchsorted(self.timestamps, start)
-        idx_r = torch.searchsorted(self.timestamps, end, right=True)
+        for key in self.keys:
+            value = getattr(self, key)
+            file.create_dataset(key, data=value)
 
-        out = self.__class__.__new__(self.__class__)
-        for key, value in self.__dict__.items():
-            if isinstance(value, Tensor):
-                out.__dict__[key] = value[idx_l:idx_r].clone()
-            elif isinstance(value, np.ndarray):
-                # E.g. array of strings.
-                out.__dict__[key] = value[idx_l:idx_r].copy()
-            elif isinstance(value, list):
-                # e.g. lists of names.
-                out.__dict__[key] = value[idx_l:idx_r]
+        # make sure to save the start and end times
+        file.attrs["start"] = self.start
+        file.attrs["end"] = self.end
 
-        out.timestamps = out.timestamps - start
-        return out
+        file.attrs["timekeys"] = np.array(self._timekeys, dtype="S")
 
-    def clip(self, start=None, end=None):
-        r"""While :meth:`slice` resets the timestamps, this method does not."""
-        if not self.sorted:
-            self.sort()
-        assert (
-            start is not None or end is not None
-        ), "start or/and end must be specified"
+        # timestamps is special
+        grid_timestamps = np.arange(
+            self.start, self.end + 1.0, 1.0
+        )  # 1 second resolution
+        file.create_dataset(
+            "timestamp_indices_1s",
+            data=np.searchsorted(self.timestamps, grid_timestamps),
+        )
 
-        idx_l = idx_r = None
+        file.attrs["object"] = self.__class__.__name__
 
-        if start is not None:
-            idx_l = torch.searchsorted(self.timestamps, start)
+    @classmethod
+    def from_hdf5(cls, file):
+        assert file.attrs["object"] == cls.__name__, "object type mismatch"
+        data = {}
+        for key, value in file.items():
+            if key == "timestamp_indices_1s":
+                data["_timestamp_indices_1s"] = value[:]
+            else:
+                data[key] = value
 
-        if end is not None:
-            idx_r = torch.searchsorted(self.timestamps, end, right=True)
+        obj = cls(**data)
+        obj._lazy = True
 
-        out = self.__class__.__new__(self.__class__)
-        for key, value in self.__dict__.items():
-            out.__dict__[key] = value[idx_l:idx_r].clone()
-        return out
+        # recover start and end times
+        obj._start = file.attrs["start"]
+        obj._end = file.attrs["end"]
+        obj._sorted = True
+        obj._timekeys = file.attrs["timekeys"].astype(str).tolist()
+
+        return obj
 
 
-class Interval(DatumBase):
+class RegularTimeSeries(IrregularTimeSeries):
+    """A regular time series is the same as a regular time series, but it has a
+    regular sampling rate.
+    """
+
+    @property
+    def sampling_rate(self):
+        return 1 / (self.timestamps[1] - self.timestamps[0])
+
+
+class Interval(ArrayDict):
     r"""An interval object is a set of time intervals each defined by a start time and
     an end time."""
+    _sorted = None
+    _lazy = False
 
-    def __init__(self, start: torch.Tensor, end: torch.Tensor, **kwargs):
+    def __init__(
+        self, start: np.ndarray, end: np.ndarray, *, timekeys=["start", "end"], **kwargs
+    ):
         self.start = start
         self.end = end
 
         for key, value in kwargs.items():
             setattr(self, key, value)
 
-    def __len__(self):
-        return self.start.size(0)
+        if "start" not in self.keys:
+            timekeys.append("start")
+        if "end" not in self.keys:
+            timekeys.append("end")
+        for key in timekeys:
+            assert key in self.keys, f"Time attribute {key} not found in data."
 
-    def __getitem__(self, item: Union[str, int, slice, list, Tensor, np.ndarray]):
+        self._timekeys = timekeys
+
+    def __setattr__(self, name, value):
+        super(Interval, self).__setattr__(name, value)
+        if name == "start" or name == "end":
+            # start or end have been updated, we no longer know whether it is sorted
+            # or not
+            self._sorted = None
+
+    @property
+    def disjoint(self):
+        # check if we already know that the sequence is sorted
+        # if lazy loading, we'll have to skip this check
+        if self._lazy:
+            raise ValueError(
+                "Cannot check if intervals are disjoint for lazy time series."
+            )
+        if not self.sorted:
+            return copy.deepcopy(self).sort().disjoint
+        return np.all(self.end[:-1] <= self.start[1:])
+
+    @property
+    def sorted(self):
+        # check if we already know that the sequence is sorted
+        # if lazy loading, we'll have to skip this check
+        if self._sorted is None and not self._lazy:
+            self._sorted = np.all(self.start[1:] >= self.start[:-1]) and np.all(
+                self.end[1:] >= self.end[:-1]
+            )
+        return self._sorted
+
+    def sort(self):
+        r"""Sorts the timestamps."""
+        if self._lazy:
+            raise ValueError("Cannot sort lazy time series.")
+        if not self.sorted:
+            sorted_indices = np.argsort(self.start)
+            for key in self.keys:
+                self.__dict__[key] = self.__dict__[key][sorted_indices]
+        self._sorted = True
+
+        assert self.disjoint, "Intervals must be disjoint after sorting."
+
+    def __len__(self) -> int:
+        return self.start.shape[0]
+
+    def __getitem__(self, item: Union[str, int, slice, list, np.ndarray]):
         r"""Allows indexing of the :obj:`Interval` object.
 
         It can be indexed with:
@@ -206,17 +375,17 @@ class Interval(DatumBase):
             selected elements and their corresponding attributes.
 
         Example:
-            >> import torch
+            >> import numpy as np
             >> from kirby.data import Interval
-            >> interval = Interval(torch.tensor([0, 1, 2]), torch.tensor([1, 2, 3]))
+            >> interval = Interval(np.array([0, 1, 2]), np.array([1, 2, 3]))
             >> interval[0]
-            Interval(start=tensor([0]), end=tensor([1]))
+            Interval(start=np.array([0]), end=np.array([1]))
             >> interval[0:2]
-            Interval(start=tensor([0, 1]), end=tensor([1, 2]))
+            Interval(start=np.array([0, 1]), end=np.array([1, 2]))
             >> interval[[0, 2]]
-            Interval(start=tensor([0, 2]), end=tensor([1, 3]))
+            Interval(start=np.array([0, 2]), end=np.array([1, 3]))
             >> interval[[True, False, True]]
-            Interval(start=tensor([0, 2]), end=tensor([1, 3]))
+            Interval(start=np.array([0, 2]), end=np.array([1, 3]))
         """
         if isinstance(item, str):
             # return the corresponding attribute
@@ -224,32 +393,54 @@ class Interval(DatumBase):
         else:
             out = self.__class__.__new__(self.__class__)
             for key, value in self.__dict__.items():
-                out.__dict__[key] = value[item]
+                if key == "_sorted":
+                    out.__dict__[
+                        "_sorted"
+                    ] = None  # We don't know if these intervals are sorted
+                elif key == "_timekeys":
+                    out.__dict__["_timekeys"] = value
+                else:
+                    out.__dict__[key] = value[item]
 
             return out
 
-    def slice(self, start, end):
-        # torch.searchsorted uses binary search
-        idx_l = torch.searchsorted(
+    def slice(self, start: float, end: float, request_keys: Optional[List[str]] = None):
+        if request_keys is None:
+            request_keys = self.keys
+
+        if self._lazy:
+            # load the request keys only and return a new object
+            out = self.__class__.__new__(self.__class__)
+            out._timekeys = self._timekeys
+
+            for key in self.keys:
+                if key in request_keys:
+                    out.__dict__[key] = self.__dict__[key][:]  # load into memory
+
+            return out.slice(start, end, request_keys=request_keys)
+
+        assert "start" in request_keys and "end" in request_keys
+
+        if not self.sorted:
+            self.sort()
+
+        idx_l = np.searchsorted(
             self.end, start
         )  # anything that starts before the end of the slicing window
-        idx_r = torch.searchsorted(
-            self.start, end, right=True
+        idx_r = np.searchsorted(
+            self.start, end, side="right"
         )  # anything that will end after the start of the slicing window
 
         out = self.__class__.__new__(self.__class__)
-        for key, value in self.__dict__.items():
-            if isinstance(value, Tensor):
-                out.__dict__[key] = value[idx_l:idx_r].clone()
-            elif isinstance(value, np.ndarray):
-                # E.g. array of strings.
-                out.__dict__[key] = value[idx_l:idx_r].copy()
-            elif isinstance(value, list):
-                # e.g. lists of names.
-                out.__dict__[key] = value[idx_l:idx_r]
+        out._timekeys = self._timekeys
 
-        out.start = out.start - start
-        out.end = out.end - start
+        for key in self.keys:
+            if key in request_keys:
+                out.__dict__[key] = self.__dict__[key][idx_l:idx_r].copy()
+
+        for key in self._timekeys:
+            if key in request_keys:
+                out.__dict__[key] = out.__dict__[key] - start
         return out
 
     def split(
@@ -260,8 +451,8 @@ class Interval(DatumBase):
         random_seed=None,
     ):
         r"""Splits the set of intervals into multiple subsets. This will
-        return a number of new :obj:`Interval` objects equal to the number of elements 
-        in `sizes`. If `shuffle` is set to :obj:`True`, the intervals will be shuffled 
+        return a number of new :obj:`Interval` objects equal to the number of elements
+        in `sizes`. If `shuffle` is set to :obj:`True`, the intervals will be shuffled
         before splitting.
 
         Args:
@@ -269,16 +460,16 @@ class Interval(DatumBase):
             number of intervals. If floats, the list must sum to 1.0.
             shuffle: If :obj:`True`, the intervals will be shuffled before splitting.
             random_seed: The random seed to use for shuffling.
-        
+
         .. note::
             This method will not guarantee that the resulting sets will be disjoint, if
             the intervals are not already disjoint.
         """
-        
+
         assert len(sizes) > 1, "must split into at least two sets"
         assert len(sizes) < len(self), f"cannot split {len(self)} intervals into "
         " {len(sizes)} sets"
-        
+
         # if sizes are floats, convert them to integers
         if all(isinstance(x, float) for x in sizes):
             assert sum(sizes) == 1.0, "sizes must sum to 1.0"
@@ -294,11 +485,10 @@ class Interval(DatumBase):
 
         # shuffle
         if shuffle:
-            generator = torch.Generator()
-            generator.manual_seed(random_seed)
-            idx = torch.randperm(len(self), generator=generator)
+            rng = np.random.default_rng(random_seed)  # Create a new generator instance
+            idx = rng.permutation(len(self))  # Use the generator for permutation
         else:
-            idx = torch.arange(len(self))
+            idx = np.arange(len(self))  # Create a sequential index array
 
         # split
         splits = []
@@ -306,13 +496,13 @@ class Interval(DatumBase):
         for size in sizes:
             splits.append(self[idx[start : start + size]])
             start += size
-        
+
         return splits
 
     @classmethod
     def linspace(cls, start: float, end: float, steps: int):
         """Create a regular interval with a given number of samples."""
-        timestamps = torch.linspace(start, end, steps + 1)
+        timestamps = np.linspace(start, end, steps + 1)
         return cls(
             start=timestamps[:-1],
             end=timestamps[1:],
@@ -324,7 +514,7 @@ class Interval(DatumBase):
         must have a start time and end time columns. The names of these columns need
         to be "start" and "end" (use `pd.Dataframe.rename` if needed).
 
-        Columns that are numeric will be converted to tensors. Columns that are
+        Columns that are numeric will be converted to ndarrays. Columns that are
         ndarrays will be stacked if they share the same size. Any other column type will
         be skipped.
 
@@ -344,7 +534,7 @@ class Interval(DatumBase):
         for column in df.columns:
             if pd.api.types.is_numeric_dtype(df[column]):
                 # Directly convert numeric columns to numpy arrays
-                data[column] = torch.tensor(df[column].to_numpy())
+                data[column] = df[column].to_numpy()
             elif df[column].apply(lambda x: isinstance(x, np.ndarray)).all():
                 # Check if all ndarrays in the column have the same shape
                 ndarrays = df[column]
@@ -356,7 +546,7 @@ class Interval(DatumBase):
                 ):
                     # If all elements in the column are ndarrays with the same shape,
                     # stack them
-                    data[column] = torch.tensor(np.stack(df[column].values))
+                    data[column] = np.stack(df[column].values)
                 else:
                     logging.warn(
                         f"The ndarrays in column '{column}' do not all have the "
@@ -364,23 +554,31 @@ class Interval(DatumBase):
                     )
             else:
                 logging.warn(
-                    f"Unable to convert column '{column}' to a tensor. Skipping."
+                    f"Unable to convert column '{column}' to a array. Skipping."
                 )
         return cls(**data)
 
+    def to_hdf5(self, file):
+        for key in self.keys:
+            value = getattr(self, key)
+            file.create_dataset(key, data=value)
 
-class RegularTimeSeries(IrregularTimeSeries):
-    """A regular time series is the same as a regular time series, but it has a
-    regular sampling rate. This allows for faster indexing and meaningful Fourier
-    operations.
+        file.attrs["timekeys"] = np.array(self._timekeys, dtype="S")
+        file.attrs["object"] = self.__class__.__name__
 
-    For now, we simply do a pass-through, but later we will implement faster
-    algorithms.
-    """
+    @classmethod
+    def from_hdf5(cls, file):
+        assert file.attrs["object"] == cls.__name__, "object type mismatch"
+        data = {}
+        for key, value in file.items():
+            data[key] = value
 
-    @property
-    def sampling_rate(self):
-        return 1 / (self.timestamps[1] - self.timestamps[0])
+        obj = cls(**data)
+        obj._lazy = True
+
+        obj._timekeys = file.attrs["timekeys"].astype(str).tolist()
+
+        return obj
 
 
 class Hemisphere(StringIntEnum):
@@ -417,10 +615,10 @@ class Probe(Dictable):
     waveform_sampling_rate: float
     waveform_samples: int
     channels: list[Channel]
-    ecog_sampling_rate: float = 0.
+    ecog_sampling_rate: float = 0.0
 
 
-AttrTensor = Union[Tensor, DatumBase]
+AttrTensor = Union[np.ndarray, ArrayDict]
 
 
 class Data(object):
@@ -432,9 +630,14 @@ class Data(object):
         spikes: Optional[IrregularTimeSeries] = None,
         **kwargs,
     ):
-        # unit_attr: OptTensor = None,
-        # x_timestamps: OptTensor = None, x_attr: OptTensor = None,
-        # y_start: OptTensor = None, y_end: OptTensor = None, y_attr: OptTensor = None,
+        # if any time-based attribute is present, start and end must be specified
+        if spikes is not None or any(
+            isinstance(value, (IrregularTimeSeries, RegularTimeSeries, Interval))
+            for value in kwargs.values()
+        ):
+            assert (
+                start is not None and end is not None
+            ), "If any time-based attribute is present, start and end must be specified."
 
         self.start = start
         self.end = end
@@ -450,59 +653,57 @@ class Data(object):
         for key, value in kwargs.items():
             setattr(self, key, value)
 
-    def slice(self, start, end):
+    def __setattr__(self, name, value):
+        if isinstance(value, (IrregularTimeSeries, RegularTimeSeries, Interval)):
+            assert self.start is not None and self.end is not None, (
+                "Attempted to set an time-based attribute, but start and end times were"
+                " not specified. Please set start and end times first."
+            )
+        super(Data, self).__setattr__(name, value)
+
+    def slice(self, start: float, end: float, request_keys: Optional[List[str]] = None):
+        if self.start is None:
+            # this data object does not have any time-based attributes
+            return copy.deepcopy(self)
+
         out = self.__class__.__new__(self.__class__)
 
+        if request_keys is None:
+            request_keys = self.keys
+
+        request_tree = parse_request_keys(request_keys)
+
         for key, value in self.__dict__.items():
-            if isinstance(value, (IrregularTimeSeries, RegularTimeSeries, Interval)):
-                out.__dict__[key] = value.slice(start, end)
-            else:
-                out.__dict__[key] = copy.copy(value)
+            if key in request_tree:
+                assert isinstance(
+                    value, (Data, IrregularTimeSeries, RegularTimeSeries, Interval)
+                ), f"Cannot slice {key} of type {type(value)}."
+                out.__dict__[key] = value.slice(
+                    start, end, request_keys=request_tree[key]
+                )
+            elif key in request_tree["_root"]:
+                if isinstance(
+                    value, (IrregularTimeSeries, RegularTimeSeries, Interval)
+                ):
+                    out.__dict__[key] = value.slice(start, end, request_keys=None)
+                else:
+                    out.__dict__[key] = copy.copy(value)
 
         # keep track of the original start and end times
         out.original_start = self.original_start + start - self.start
         out.original_end = self.original_end + end - self.end
 
         # update the start and end times relative to the new slice
-        out.start = torch.tensor(0.0)
+        out.start = 0.0
         out.end = end - start
         return out
-
-    def slice_along_fixed(self, key, start, length, offset=0):
-        start_vec = self.__dict__[key].__dict__[start]
-        for id, start in enumerate(start_vec):
-            start = start + offset
-            end = start + length
-            out = self.__class__.__new__(self.__class__)
-            for key_, value in self.__dict__.items():
-                if isinstance(value, IrregularTimeSeries):
-                    out.__dict__[key_] = value.slice(start, end)
-                elif key_ == key:
-                    out.__dict__[key_] = value[id]
-                else:
-                    out.__dict__[key_] = copy.copy(value)
-            yield out
-
-    def slice_along(self, key, start, end):
-        start_vec = self.__dict__[key].__dict__[start]
-        end_vec = self.__dict__[key].__dict__[end]
-        for id, (start, end) in enumerate(zip(start_vec, end_vec)):
-            out = self.__class__.__new__(self.__class__)
-            for key_, value in self.__dict__.items():
-                if isinstance(value, IrregularTimeSeries):
-                    out.__dict__[key_] = value.slice(start, end)
-                elif key_ == key:
-                    out.__dict__[key_] = value[id]
-                else:
-                    out.__dict__[key_] = copy.copy(value)
-            yield out
 
     def __repr__(self) -> str:
         cls = self.__class__.__name__
 
         info = ""
         for key, value in self.__dict__.items():
-            if isinstance(value, DatumBase):
+            if isinstance(value, ArrayDict):
                 info = info + key + "=" + repr(value) + ",\n"
             elif value is not None:
                 info = info + size_repr(key, value) + ",\n"
@@ -513,120 +714,72 @@ class Data(object):
         r"""Returns a dictionary of stored key/value pairs."""
         return copy.deepcopy(self.__dict__)
 
-    def save_to(self, f) -> None:
-        r"""Saves self to a file with pickle"""
-        with open(f, "wb") as output:
-            pickle.dump(self.__dict__, output)
+    def to_hdf5(self, file):
+        for key, value in self.__dict__.items():
+            if isinstance(
+                value, (Data, IrregularTimeSeries, RegularTimeSeries, Interval)
+            ):
+                grp = file.create_group(key)
+                value.to_hdf5(grp)
+            elif isinstance(value, np.ndarray):
+                file.create_dataset(key, data=value)
+            elif value is not None:
+                # each attribute should be small (generally < 64k)
+                # there is no partial I/O; the entire attribute must be read
+                file.attrs[key] = value
+        file.attrs["object"] = self.__class__.__name__
 
-    @staticmethod
-    def load_from(f) -> Data:
-        r"""Load and return Data object from filename"""
-        data = Data()
-        with open(f, "rb") as fp:
-            data.__dict__ = pickle.load(fp)
-        return data
+    @classmethod
+    def from_hdf5(cls, file):
+        data = {}
+        for key, value in file.items():
+            if isinstance(value, h5py.Group):
+                group_cls = globals()[value.attrs["object"]]
+                data[key] = group_cls.from_hdf5(value)
+            else:
+                data[key] = value[:]
 
-    def bucketize(self, bucket_size, step, jitter):
-        r"""Bucketize the data into buckets of size bucket_size (in seconds))."""
-        assert (
-            self.start is not None and self.end is not None
-        ), "start and end must be specified"
+        for key, value in file.attrs.items():
+            # Things like "start", "end", "original_start" etc are file attributes
+            data[key] = value
 
-        # get start and end of buckets
-        bucket_start = self.start + np.arange(0, self.end - self.start, step)
-        bucket_end = bucket_start + bucket_size
+        obj = cls(**data)
 
-        # add padding to buckets to enable jittering
-        bucket_start = np.maximum(self.start, bucket_start - jitter)
-        bucket_end = np.minimum(bucket_end + jitter, self.end)
-
-        for id, (start, end) in enumerate(zip(bucket_start, bucket_end)):
-            out = self.__class__.__new__(self.__class__)
-            for key_, value in self.__dict__.items():
-                if isinstance(value, IrregularTimeSeries):
-                    out.__dict__[key_] = value.slice(start, end)
-                else:
-                    out.__dict__[key_] = copy.copy(value)
-            out.start, out.end = start, end
-            yield out
-
-    ###########################################################################
+        return obj
 
     @property
     def keys(self) -> List[str]:
         r"""Returns a list of all attribute names."""
         return list(self.__dict__.keys())
 
-    def __len__(self) -> int:
-        r"""Returns the number of graph attributes."""
-        return len(self.keys)
-
     def __contains__(self, key: str) -> bool:
         r"""Returns :obj:`True` if the attribute :obj:`key` is present in the
         data."""
         return key in self.keys
 
-    def apply(self, func: Callable):
-        r"""Applies the function :obj:`func` to all attributes."""
-        for key, value in self.__dict__.items():
-            setattr(self, key, recursive_apply(value, func))
-        return self
+    def get_nested_attribute(self, path: str) -> Any:
+        # Split key by dots, resolve using getattr
+        components = path.split(".")
+        out = self
+        for c in components:
+            try:
+                out = getattr(out, c)
+            except AttributeError:
+                raise AttributeError(
+                    f"Could not resolve {path} in data (specifically, at level {c}))"
+                )
+        return out
 
-    def clone(self):
-        r"""Performs cloning of tensors for all attributes."""
-        return copy.copy(self).apply(lambda x: x.clone())
 
-    def contiguous(self):
-        r"""Ensures a contiguous memory layout for all attributes."""
-        return self.apply(lambda x: x.contiguous())
-
-    def to(self, device: Union[int, str], non_blocking: bool = False):
-        r"""Performs tensor device conversion for all attributes."""
-        return self.apply(lambda x: x.to(device=device, non_blocking=non_blocking))
-
-    def cpu(self):
-        r"""Copies attributes to CPU memory, either for all attributes or only
-        the ones given in :obj:`*args`."""
-        return self.apply(lambda x: x.cpu())
-
-    def cuda(
-        self, device: Optional[Union[int, str]] = None, non_blocking: bool = False
-    ):
-        r"""Copies attributes to CUDA memory, either for all attributes ."""
-        # Some PyTorch tensor like objects require a default value for `cuda`:
-        device = "cuda" if device is None else device
-        return self.apply(
-            lambda x: x.cuda(device, non_blocking=non_blocking),
-        )
-
-    def pin_memory(self):
-        r"""Copies attributes to pinned memory for all attributes."""
-        return self.apply(lambda x: x.pin_memory())
-
-    def share_memory_(self):
-        r"""Moves attributes to shared memory for all attributes."""
-        return self.apply(lambda x: x.share_memory_())
-
-    def detach_(self, *args: List[str]):
-        r"""Detaches attributes from the computation graph."""
-        return self.apply(lambda x: x.detach_())
-
-    def detach(self):
-        r"""Detaches attributes from the computation graph by creating a new tensor."""
-        return self.apply(lambda x: x.detach())
-
-    def requires_grad_(self, requires_grad: bool = True):
-        r"""Tracks gradient computation for all attributes."""
-        return self.apply(lambda x: x.requires_grad_(requires_grad=requires_grad))
-
-    @property
-    def is_cuda(self) -> bool:
-        r"""Returns :obj:`True` if any :class:`torch.Tensor` attribute is
-        stored on the GPU, :obj:`False` otherwise."""
-        for value in self.__dict__.values():
-            if isinstance(value, Tensor) and value.is_cuda:
-                return True
-        return False
+def parse_request_keys(request_keys: List[str]) -> Dict[str, List[str]]:
+    request_tree = defaultdict(list)
+    for key in request_keys:
+        if "." in key:
+            key, subkey = key.split(".", 1)
+            request_tree[key].append(subkey)
+        else:
+            request_tree["_root"].append(key)
+    return request_tree
 
     def get_nested_attribute(self, path: str) -> Any:
         # Split key by dots, resolve using getattr
@@ -644,9 +797,9 @@ class Data(object):
 
 def size_repr(key: Any, value: Any, indent: int = 0) -> str:
     pad = " " * indent
-    if isinstance(value, Tensor) and value.dim() == 0:
+    if isinstance(value, torch.Tensor) and value.dim() == 0:
         out = value.item()
-    elif isinstance(value, Tensor):
+    elif isinstance(value, torch.Tensor):
         out = str(list(value.size()))
     elif isinstance(value, np.ndarray):
         out = str(list(value.shape))
@@ -673,7 +826,7 @@ def size_repr(key: Any, value: Any, indent: int = 0) -> str:
 
 
 def recursive_apply(data: Any, func: Callable) -> Any:
-    if isinstance(data, Tensor):
+    if isinstance(data, torch.Tensor):
         return func(data)
     elif isinstance(data, torch.nn.utils.rnn.PackedSequence):
         return func(data)
