@@ -642,7 +642,6 @@ class Interval(ArrayDict):
 
         obj = cls(**data)
         obj._lazy = True
-
         obj._timekeys = file.attrs["timekeys"].astype(str).tolist()
         obj._allow_split_mask_overlap = file.attrs["allow_split_mask_overlap"]
 
@@ -813,7 +812,6 @@ class Data(object):
 
         obj = cls(**data)
         return obj
-
 
     def add_split_mask(
         self,
