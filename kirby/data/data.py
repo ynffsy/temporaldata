@@ -628,6 +628,19 @@ class Data(object):
                 return True
         return False
 
+    def get_nested_attribute(self, path: str) -> Any:
+        # Split key by dots, resolve using getattr
+        components = path.split(".")
+        out = self
+        for c in components:
+            try:
+                out = getattr(out, c)
+            except AttributeError:
+                raise AttributeError(
+                    f"Could not resolve {path} in data (specifically, at level {c}))"
+                )
+        return out
+
 
 def size_repr(key: Any, value: Any, indent: int = 0) -> str:
     pad = " " * indent
