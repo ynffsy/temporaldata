@@ -199,7 +199,7 @@ class IrregularTimeSeries(ArrayDict):
             out._timekeys = self._timekeys
 
             for key in self.keys:
-                if key in request_keys:
+                if key in request_keys or key in ["train_mask", "val_mask", "test_mask"]:
                     out.__dict__[key] = self.__dict__[key][idx_l:idx_r].copy()
 
             for key in self._timekeys:
@@ -227,8 +227,9 @@ class IrregularTimeSeries(ArrayDict):
             out._timekeys = self._timekeys
             out._sorted = True
             
-            for key in request_keys:
-                out.__dict__[key] = self.__dict__[key][idx_l:idx_r]
+            for key in self.keys:
+                if key in request_keys or key in ["train_mask", "val_mask", "test_mask"]:
+                    out.__dict__[key] = self.__dict__[key][idx_l:idx_r]
 
             # the slice we get is only precise to the 1sec, so we re-slice
             return out.slice(start, end)
@@ -312,7 +313,6 @@ class RegularTimeSeries(IrregularTimeSeries):
     def sampling_rate(self):
         return 1 / (self.timestamps[1] - self.timestamps[0])
 
-      
 class Interval(ArrayDict):
     r"""An interval object is a set of time intervals each defined by a start time and
     an end time."""
@@ -457,7 +457,7 @@ class Interval(ArrayDict):
         out._timekeys = self._timekeys
 
         for key in self.keys:
-            if key in request_keys:
+            if key in request_keys or key in ["train_mask", "val_mask", "test_mask"]:
                 out.__dict__[key] = self.__dict__[key][idx_l:idx_r].copy()
 
         for key in self._timekeys:
@@ -755,14 +755,15 @@ class Data(object):
                     out.__dict__[key] = value.slice(start, end, request_keys=None)
                 else:
                     out.__dict__[key] = copy.copy(value)
+        
+        if self.start is not None:
+            # keep track of the original start and end times
+            out.original_start = self.original_start + start - self.start
+            out.original_end = self.original_end + end - self.end
 
-        # keep track of the original start and end times
-        out.original_start = self.original_start + start - self.start
-        out.original_end = self.original_end + end - self.end
-
-        # update the start and end times relative to the new slice
-        out.start = 0.0
-        out.end = end - start
+            # update the start and end times relative to the new slice
+            out.start = 0.0
+            out.end = end - start
         return out
 
     def __repr__(self) -> str:
@@ -877,19 +878,6 @@ def parse_request_keys(request_keys: List[str]) -> Dict[str, List[str]]:
         else:
             request_tree["_root"].append(key)
     return request_tree
-
-    def get_nested_attribute(self, path: str) -> Any:
-        # Split key by dots, resolve using getattr
-        components = path.split(".")
-        out = self
-        for c in components:
-            try:
-                out = getattr(out, c)
-            except AttributeError:
-                raise AttributeError(
-                    f"Could not resolve {path} in data (specifically, at level {c}))"
-                )
-        return out
 
 
 def size_repr(key: Any, value: Any, indent: int = 0) -> str:
