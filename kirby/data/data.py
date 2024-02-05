@@ -226,14 +226,13 @@ class IrregularTimeSeries(ArrayDict):
             out = self.__class__.__new__(self.__class__)
             out._timekeys = self._timekeys
             out._sorted = True
-
-            for key in self.keys:
-                if key in request_keys:
-                    out.__dict__[key] = self.__dict__[key][idx_l:idx_r]
+            
+            for key in request_keys:
+                out.__dict__[key] = self.__dict__[key][idx_l:idx_r]
 
             # the slice we get is only precise to the 1sec, so we re-slice
             return out.slice(start, end)
-          
+
     def add_split_mask(
         self,
         name: str,
@@ -304,7 +303,6 @@ class IrregularTimeSeries(ArrayDict):
 
         return obj
 
-
 class RegularTimeSeries(IrregularTimeSeries):
     """A regular time series is the same as a regular time series, but it has a
     regular sampling rate.
@@ -314,7 +312,7 @@ class RegularTimeSeries(IrregularTimeSeries):
     def sampling_rate(self):
         return 1 / (self.timestamps[1] - self.timestamps[0])
 
-
+      
 class Interval(ArrayDict):
     r"""An interval object is a set of time intervals each defined by a start time and
     an end time."""
@@ -815,6 +813,7 @@ class Data(object):
 
         obj = cls(**data)
         return obj
+
 
     def add_split_mask(
         self,
