@@ -233,6 +233,29 @@ class IrregularTimeSeries(ArrayDict):
 
             # the slice we get is only precise to the 1sec, so we re-slice
             return out.slice(start, end)
+          
+    def add_split_mask(
+        self,
+        name: str,
+        interval: Interval,
+    ):
+        """Create a boolean mask array with True for all timestamps that are within the
+        intervals.
+        Args:
+            name: name of the mask. The mask attribute will be called <name>_mask
+            interval: Interval object. We will consider all timestamps that are within
+                the intervals [start, end) as having a True mask.
+        """
+        assert not hasattr(self, f"{name}_mask"), (
+            f"Attribute {name}_mask already exists. Use another mask name, or rename "
+            f"the existing attribute."
+        )
+
+        mask_array = np.zeros_like(self.timestamps, dtype=bool)
+        for start, end in zip(interval.start, interval.end):
+            mask_array |= (self.timestamps >= start) & (self.timestamps < end)
+
+        setattr(self, f"{name}_mask", mask_array)
 
     def to_hdf5(self, file):
         if not self.sorted:
@@ -296,6 +319,7 @@ class Interval(ArrayDict):
     r"""An interval object is a set of time intervals each defined by a start time and
     an end time."""
     _sorted = None
+    _allow_split_mask_overlap = False
     _lazy = False
 
     def __init__(
@@ -499,6 +523,38 @@ class Interval(ArrayDict):
 
         return splits
 
+    def add_split_mask(
+        self,
+        name: str,
+        interval: Interval,
+    ):
+        """Create a boolean mask array with True for all intervals that are within the
+        the time intervals mentioned in interval_list.
+        Args:
+            name: name of the mask. The mask attributed will be called <name>_split_mask
+            interval: Interval object. We will consider all intervals which have any of
+                start/end within the interval [start, end) as having a True mask.
+        """
+        assert not hasattr(self, f"{name}_mask"), (
+            f"Attribute {name}_mask already exists. Use another mask name, or rename "
+            f"the existing attribute."
+        )
+
+        mask_array = np.zeros_like(self.start, dtype=bool)
+        for start, end in zip(interval.start, interval.end):
+            mask_array |= (self.start >= start) & (self.start < end)
+            mask_array |= (self.end >= start) & (self.end < end)
+
+        setattr(self, f"{name}_mask", mask_array)
+
+    def allow_split_mask_overlap(self):
+        logging.warn(
+            f"You are disabling the check for split mask overlap. "
+            f"This means there could be an overlap between the intervals "
+            f"across different splits. "
+        )
+        self._allow_split_mask_overlap = True
+
     @classmethod
     def linspace(cls, start: float, end: float, steps: int):
         """Create a regular interval with a given number of samples."""
@@ -558,6 +614,18 @@ class Interval(ArrayDict):
                 )
         return cls(**data)
 
+    @classmethod
+    def from_list(cls, interval_list: List[Tuple[float, float]]):
+        r"""Create an :obj:`Interval` object from a list of (start, end) tuples.
+        Example:
+            >>> interval_list = [(0, 1), (1, 2), (2, 3)]
+            >>> interval = Interval.from_list(interval_list)
+            >>> interval.start, interval.end
+            (array([0, 1, 2]), array([1, 2, 3]))
+        """
+        start, end = zip(*interval_list) # Unzip the list of tuples
+        return cls(start=np.array(start), end=np.array(end))
+
     def to_hdf5(self, file):
         for key in self.keys:
             value = getattr(self, key)
@@ -565,6 +633,7 @@ class Interval(ArrayDict):
 
         file.attrs["timekeys"] = np.array(self._timekeys, dtype="S")
         file.attrs["object"] = self.__class__.__name__
+        file.attrs["allow_split_mask_overlap"] = self._allow_split_mask_overlap
 
     @classmethod
     def from_hdf5(cls, file):
@@ -577,6 +646,7 @@ class Interval(ArrayDict):
         obj._lazy = True
 
         obj._timekeys = file.attrs["timekeys"].astype(str).tolist()
+        obj._allow_split_mask_overlap = file.attrs["allow_split_mask_overlap"]
 
         return obj
 
@@ -744,8 +814,38 @@ class Data(object):
             data[key] = value
 
         obj = cls(**data)
-
         return obj
+
+    def add_split_mask(
+        self,
+        name: str,
+        interval: Interval,
+    ):
+        """Create split masks for all Data, Interval & IrregularTimeSeries objects
+        contained within this Data object.
+        """
+        for key in self.keys:
+            obj = getattr(self, key)
+            if isinstance(obj, (Data, IrregularTimeSeries, Interval)):
+                obj.add_split_mask(name, interval)
+
+    def _check_for_data_leakage(self, name):
+        """Ensure that split masks are all True"""
+        for key in self.keys:
+            obj = getattr(self, key)
+            if isinstance(obj, (IrregularTimeSeries, Interval)):
+                assert hasattr(obj, f"{name}_mask"), (
+                    f"Split mask for '{name}' not found in Data object. "
+                    f"Please register this split in prepare_data.py using "
+                    f"the session.register_split(...) method. In Data object: \n"
+                    f"{self}"
+                )
+                assert getattr(obj, f"{name}_mask").all(), (
+                    f"Data leakage detected split mask for '{name}' is not all True.\n"
+                    f"In Data object: \n{self}"
+                )
+            if isinstance(obj, Data):
+                obj._check_for_data_leakage(name)
 
     @property
     def keys(self) -> List[str]:
