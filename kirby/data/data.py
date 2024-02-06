@@ -35,6 +35,10 @@ class ArrayDict(object):
         have the same first dimension as the other attributes.
     """
 
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            self.__setattr__(key, value)
+
     @property
     def keys(self) -> List[str]:
         r"""Returns a list of all attribute names."""
@@ -53,7 +57,7 @@ class ArrayDict(object):
             # only ndarrays are accepted
             assert isinstance(value, np.ndarray) or isinstance(
                 value, h5py.Dataset
-            ), f"{name} must be a numpy array, got object of type {type(value)}"
+            ), f"{name} must be a numpy array or h5py.Dataset, got object of type {type(value)}"
 
             first_dim = self._maybe_first_dim()
             if first_dim is not None and value.shape[0] != first_dim:
@@ -85,6 +89,103 @@ class ArrayDict(object):
         info = [size_repr(k, getattr(self, k), indent=2) for k in self.keys]
         info = ",\n".join(info)
         return f"{cls}(\n{info}\n)"
+
+    @classmethod
+    def from_dataframe(cls, df, unsigned_to_long=True, allow_string_ndarray=True):
+        """
+        Create an `ArrayDict` object from a Pandas DataFrame.
+
+        The columns in the DataFrame are converted to arrays or lists based on their data types.
+        Numeric columns are converted to numpy arrays.
+        Unsigned integers can be optionally converted to int64 dtype ndarrays.
+        Columns containing ndarrays are stacked if they have the same shape.
+        Once stacked, the numpy arrays are optionally converted to int64 dtype.
+        Columns containing strings are optionally mapped converted to string ndarrays.
+
+        Args:
+            df (pandas.DataFrame): The input DataFrame.
+            unsigned_to_long (bool, optional): Whether to convert unsigned integers to int64 dtype inside numpy arrays. Defaults to `True`.
+            allow_string_ndarray (bool, optional): Whether to convert strings to numpy arrays. If this is set to `False`, string columns will be skipped. Defaults to `True`.
+
+        Returns:
+            ArrayDict: The created `ArrayDict` object.
+        """
+        data = {}
+        for column in df.columns:
+            if pd.api.types.is_numeric_dtype(df[column]):
+                # Directly convert numeric columns to numpy arrays
+                np_arr = df[column].to_numpy()
+                # Convert unsigned integers to long
+                if np.issubdtype(np_arr.dtype, np.unsignedinteger) and unsigned_to_long:
+                    np_arr = np_arr.astype(np.int64)
+                data[column] = np_arr
+            elif df[column].apply(lambda x: isinstance(x, np.ndarray)).all():
+                # Check if all ndarrays in the column have the same shape
+                ndarrays = df[column]
+                first_shape = ndarrays.iloc[0].shape
+                if all(
+                    arr.shape == first_shape
+                    for arr in ndarrays
+                    if isinstance(arr, np.ndarray)
+                ):
+                    # If all elements in the column are ndarrays with the same shape,
+                    # stack them
+                    np_arr = np.stack(df[column].values)
+                    if np.issubdtype(np_arr.dtype, np.unsignedinteger) and unsigned_to_long:
+                        np_arr = np_arr.astype(np.int64)
+                    data[column] = np_arr
+                else:
+                    logging.warn(
+                        f"The ndarrays in column '{column}' do not all have the same shape."
+                    )
+            elif allow_string_ndarray and isinstance(df[column].iloc[0], str):
+                try: # try to see if unicode strings can be converted to fixed length ASCII bytes
+                    df[column].to_numpy(dtype="S")
+                except UnicodeEncodeError:
+                    logging.warn(
+                        f"Unable to convert column '{column}' to a numpy array. Skipping."
+                    )
+                else:
+                    data[column] = df[column].to_numpy()
+
+            else:
+                logging.warn(
+                    f"Unable to convert column '{column}' to a numpy array. Skipping."
+                )
+        return cls(**data)
+
+    def to_hdf5(self, file):
+        unicode_type_keys = []
+        for key in self.keys:
+            value = getattr(self, key)
+
+            if value.dtype.kind == "U": # if its a unicode string type
+                try:
+                    # convert string arrays to fixed length ASCII bytes
+                    value = value.astype("S")
+                except UnicodeEncodeError:
+                    raise NotImplementedError(
+                        f"Unable to convert column '{key}' from numpy 'U' string type to fixed-length ASCII (np.dtype('S')). HDF5 does not support numpy 'U' strings."
+                    )
+                unicode_type_keys.append(key) # keep track of the keys of the arrays that were originally unicode
+            file.create_dataset(key, data=value)
+
+
+        file.attrs["unicode_type_keys"] = np.array(unicode_type_keys, dtype="S")
+        file.attrs["object"] = self.__class__.__name__
+
+    @classmethod
+    def from_hdf5(cls, file):
+        assert file.attrs["object"] == cls.__name__, "object type mismatch"
+        data = {}
+        unicode_type_keys = file.attrs["unicode_type_keys"].astype(str).tolist()
+        for key, value in file.items():
+            data[key] = value[:]
+            if key in unicode_type_keys: # if the values were originally unicode but stored as fixed length ASCII bytes
+                data[key] = data[key].astype("U") # convert back to unicode
+        obj = cls(**data)
+
+        return obj
 
 
 class IrregularTimeSeries(ArrayDict):
@@ -226,7 +327,6 @@ class IrregularTimeSeries(ArrayDict):
             out = self.__class__.__new__(self.__class__)
             out._timekeys = self._timekeys
             out._sorted = True
-            
             for key in self.keys:
                 if key in request_keys or key in ["train_mask", "val_mask", "test_mask"]:
                     out.__dict__[key] = self.__dict__[key][idx_l:idx_r]
@@ -580,37 +680,11 @@ class Interval(ArrayDict):
             the dataframe.
             Warning: if a column is not numeric or an ndarray.
         """
-        data = {}
 
         assert "start" in df.columns, f"Column 'start' not found in dataframe."
         assert "end" in df.columns, f"Column 'end' not found in dataframe."
 
-        for column in df.columns:
-            if pd.api.types.is_numeric_dtype(df[column]):
-                # Directly convert numeric columns to numpy arrays
-                data[column] = df[column].to_numpy()
-            elif df[column].apply(lambda x: isinstance(x, np.ndarray)).all():
-                # Check if all ndarrays in the column have the same shape
-                ndarrays = df[column]
-                first_shape = ndarrays.iloc[0].shape
-                if all(
-                    arr.shape == first_shape
-                    for arr in ndarrays
-                    if isinstance(arr, np.ndarray)
-                ):
-                    # If all elements in the column are ndarrays with the same shape,
-                    # stack them
-                    data[column] = np.stack(df[column].values)
-                else:
-                    logging.warn(
-                        f"The ndarrays in column '{column}' do not all have the "
-                        "same shape."
-                    )
-            else:
-                logging.warn(
-                    f"Unable to convert column '{column}' to a array. Skipping."
-                )
-        return cls(**data)
+        return super().from_dataframe(df, unsigned_to_long=False, allow_string_ndarray=False)
 
     @classmethod
     def from_list(cls, interval_list: List[Tuple[float, float]]):
@@ -625,10 +699,23 @@ class Interval(ArrayDict):
         return cls(start=np.array(start), end=np.array(end))
 
     def to_hdf5(self, file):
+        unicode_type_keys = []
         for key in self.keys:
             value = getattr(self, key)
+
+            if value.dtype.kind == "U": # if its a unicode string type
+                try:
+                    # convert string arrays to fixed length ASCII bytes
+                    value = value.astype("S")
+                except UnicodeEncodeError:
+                    raise NotImplementedError(
+                        f"Unable to convert column '{key}' from numpy 'U' string type to fixed-length ASCII (np.dtype('S')). HDF5 does not support numpy 'U' strings."
+                    )
+                unicode_type_keys.append(key) # keep track of the keys of the arrays that were originally unicode
+
             file.create_dataset(key, data=value)
 
+        file.attrs["unicode_type_keys"] = np.array(unicode_type_keys, dtype="S")
         file.attrs["timekeys"] = np.array(self._timekeys, dtype="S")
         file.attrs["object"] = self.__class__.__name__
         file.attrs["allow_split_mask_overlap"] = self._allow_split_mask_overlap
@@ -637,8 +724,11 @@ class Interval(ArrayDict):
     def from_hdf5(cls, file):
         assert file.attrs["object"] == cls.__name__, "object type mismatch"
         data = {}
+        unicode_type_keys = file.attrs["unicode_type_keys"].astype(str).tolist()
         for key, value in file.items():
             data[key] = value
+            if key in unicode_type_keys: # if the values were originally unicode but stored as fixed length ASCII bytes
+                data[key] = data[key].astype("U") # convert back to unicode
 
         obj = cls(**data)
         obj._lazy = True
@@ -755,7 +845,6 @@ class Data(object):
                     out.__dict__[key] = value.slice(start, end, request_keys=None)
                 else:
                     out.__dict__[key] = copy.copy(value)
-        
         if self.start is not None:
             # keep track of the original start and end times
             out.original_start = self.original_start + start - self.start
@@ -785,7 +874,7 @@ class Data(object):
     def to_hdf5(self, file):
         for key, value in self.__dict__.items():
             if isinstance(
-                value, (Data, IrregularTimeSeries, RegularTimeSeries, Interval)
+                value, (Data, IrregularTimeSeries, RegularTimeSeries, Interval, ArrayDict)
             ):
                 grp = file.create_group(key)
                 value.to_hdf5(grp)
