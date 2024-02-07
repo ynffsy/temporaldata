@@ -42,7 +42,7 @@ class ArrayDict(object):
     @property
     def keys(self) -> List[str]:
         r"""Returns a list of all attribute names."""
-        return [x for x in self.__dict__.keys() if not x.startswith('_')]
+        return [x for x in self.__dict__.keys() if not x.startswith("_")]
 
     def _maybe_first_dim(self):
         r"""If `ArrayDict` has at least one attribute, returns the first dimension of
@@ -300,7 +300,11 @@ class IrregularTimeSeries(ArrayDict):
             out._timekeys = self._timekeys
 
             for key in self.keys:
-                if key in request_keys or key in ["train_mask", "val_mask", "test_mask"]:
+                if key in request_keys or key in [
+                    "train_mask",
+                    "val_mask",
+                    "test_mask",
+                ]:
                     out.__dict__[key] = self.__dict__[key][idx_l:idx_r].copy()
 
             for key in self._timekeys:
@@ -328,7 +332,11 @@ class IrregularTimeSeries(ArrayDict):
             out._timekeys = self._timekeys
             out._sorted = True
             for key in self.keys:
-                if key in request_keys or key in ["train_mask", "val_mask", "test_mask"]:
+                if key in request_keys or key in [
+                    "train_mask",
+                    "val_mask",
+                    "test_mask",
+                ]:
                     out.__dict__[key] = self.__dict__[key][idx_l:idx_r]
 
             # the slice we get is only precise to the 1sec, so we re-slice
@@ -404,14 +412,126 @@ class IrregularTimeSeries(ArrayDict):
 
         return obj
 
-class RegularTimeSeries(IrregularTimeSeries):
-    """A regular time series is the same as a regular time series, but it has a
-    regular sampling rate.
+
+class RegularTimeSeries(ArrayDict):
+    """A regular time series is the same as an irregular time series, but it has a
+    regular sampling rate. This allows for faster indexing and meaningful Fourier
+    operations.
+
+    The first dimension of all attributes must be the time dimension.
+
+    .. note:: If you have a matrix of shape (N, T), where N is the number of channels
+    and T is the number of time points, you should transpose it to (T, N) before passing
+    it to the constructor, since the first dimension should always be time.
     """
 
+    _lazy = False
+
+    def __init__(
+        self,
+        *,
+        sampling_rate: float,  # in Hz
+        **kwargs: Dict[str, Union[np.ndarray, h5py.Dataset]],
+    ):
+        super().__init__()
+
+        self._sampling_rate = sampling_rate
+
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+    def __len__(self) -> int:
+        r"""Returns the number of time points."""
+        return self._maybe_first_dim()
+
     @property
-    def sampling_rate(self):
-        return 1 / (self.timestamps[1] - self.timestamps[0])
+    def sampling_rate(self) -> float:
+        return self._sampling_rate
+
+    @property
+    def start(self) -> float:
+        return 0.0
+
+    @property
+    def end(self) -> float:
+        return self.start + len(self) / self.sampling_rate
+
+    def slice(self, start: float, end: float, request_keys: Optional[List[str]] = None):
+        if request_keys is None:
+            request_keys = self.keys
+
+        start_id = int(np.floor(start * self.sampling_rate))
+        end_id = int(np.ceil(end * self.sampling_rate))
+
+        out = self.__class__.__new__(self.__class__)
+        out._sampling_rate = self.sampling_rate
+        for key in self.keys:
+            if key in request_keys or key in [
+                "train_mask",
+                "val_mask",
+                "test_mask",
+            ]:
+                out.__dict__[key] = self.__dict__[key][start_id:end_id].copy()
+
+        return out
+
+    def add_split_mask(
+        self,
+        name: str,
+        interval: Interval,
+    ):
+        """Create a boolean mask array with True for all timestamps that are within the
+        intervals.
+        Args:
+            name: name of the mask. The mask attribute will be called <name>_mask
+            interval: Interval object. We will consider all timestamps that are within
+                the intervals [start, end) as having a True mask.
+        """
+        assert not hasattr(self, f"{name}_mask"), (
+            f"Attribute {name}_mask already exists. Use another mask name, or rename "
+            f"the existing attribute."
+        )
+
+        mask_array = np.zeros_like(self.timestamps, dtype=bool)
+        for start, end in zip(interval.start, interval.end):
+            mask_array |= (self.timestamps >= start) & (self.timestamps < end)
+
+        setattr(self, f"{name}_mask", mask_array)
+
+    def to_irregular(self):
+        r"""Converts the time series to an irregular time series."""
+        assert not self._lazy
+
+        return IrregularTimeSeries(
+            timestamps=self.timestamps,
+            **{k: getattr(self, k) for k in self.keys},
+        )
+
+    @property
+    def timestamps(self):
+        return np.arange(self.start, self.end, 1.0 / self.sampling_rate) 
+
+    def to_hdf5(self, file):
+        for key in self.keys:
+            value = getattr(self, key)
+            file.create_dataset(key, data=value)
+
+        file.attrs["object"] = self.__class__.__name__
+        file.attrs["sampling_rate"] = self.sampling_rate
+
+    @classmethod
+    def from_hdf5(cls, file):
+        assert file.attrs["object"] == cls.__name__, "object type mismatch"
+
+        data = {}
+        for key, value in file.items():
+            data[key] = value
+
+        obj = cls(**data, sampling_rate=file.attrs["sampling_rate"])
+        obj._lazy = True
+
+        return obj
+
 
 class Interval(ArrayDict):
     r"""An interval object is a set of time intervals each defined by a start time and
@@ -695,7 +815,7 @@ class Interval(ArrayDict):
             >>> interval.start, interval.end
             (array([0, 1, 2]), array([1, 2, 3]))
         """
-        start, end = zip(*interval_list) # Unzip the list of tuples
+        start, end = zip(*interval_list)  # Unzip the list of tuples
         return cls(start=np.array(start), end=np.array(end))
 
     def to_hdf5(self, file):
@@ -789,8 +909,7 @@ class Data(object):
     ):
         # if any time-based attribute is present, start and end must be specified
         if spikes is not None or any(
-            isinstance(value, (IrregularTimeSeries, RegularTimeSeries, Interval))
-            for value in kwargs.values()
+            isinstance(value, ArrayDict) for value in kwargs.values()
         ):
             assert (
                 start is not None and end is not None
@@ -811,7 +930,7 @@ class Data(object):
             setattr(self, key, value)
 
     def __setattr__(self, name, value):
-        if isinstance(value, (IrregularTimeSeries, RegularTimeSeries, Interval)):
+        if isinstance(value, ArrayDict):
             assert self.start is not None and self.end is not None, (
                 "Attempted to set an time-based attribute, but start and end times were"
                 " not specified. Please set start and end times first."
@@ -833,18 +952,17 @@ class Data(object):
         for key, value in self.__dict__.items():
             if key in request_tree:
                 assert isinstance(
-                    value, (Data, IrregularTimeSeries, RegularTimeSeries, Interval)
+                    value, (Data, ArrayDict)
                 ), f"Cannot slice {key} of type {type(value)}."
                 out.__dict__[key] = value.slice(
                     start, end, request_keys=request_tree[key]
                 )
             elif key in request_tree["_root"]:
-                if isinstance(
-                    value, (IrregularTimeSeries, RegularTimeSeries, Interval)
-                ):
+                if isinstance(value, ArrayDict):
                     out.__dict__[key] = value.slice(start, end, request_keys=None)
                 else:
                     out.__dict__[key] = copy.copy(value)
+
         if self.start is not None:
             # keep track of the original start and end times
             out.original_start = self.original_start + start - self.start
@@ -873,9 +991,7 @@ class Data(object):
 
     def to_hdf5(self, file):
         for key, value in self.__dict__.items():
-            if isinstance(
-                value, (Data, IrregularTimeSeries, RegularTimeSeries, Interval, ArrayDict)
-            ):
+            if isinstance(value, (Data, ArrayDict)):
                 grp = file.create_group(key)
                 value.to_hdf5(grp)
             elif isinstance(value, np.ndarray):
@@ -913,14 +1029,16 @@ class Data(object):
         """
         for key in self.keys:
             obj = getattr(self, key)
-            if isinstance(obj, (Data, IrregularTimeSeries, Interval)):
+            if isinstance(
+                obj, (Data, RegularTimeSeries, IrregularTimeSeries, Interval)
+            ):
                 obj.add_split_mask(name, interval)
 
     def _check_for_data_leakage(self, name):
         """Ensure that split masks are all True"""
         for key in self.keys:
             obj = getattr(self, key)
-            if isinstance(obj, (IrregularTimeSeries, Interval)):
+            if isinstance(obj, (RegularTimeSeries, IrregularTimeSeries, Interval)):
                 assert hasattr(obj, f"{name}_mask"), (
                     f"Split mask for '{name}' not found in Data object. "
                     f"Please register this split in prepare_data.py using "

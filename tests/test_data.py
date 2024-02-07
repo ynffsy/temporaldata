@@ -1,7 +1,7 @@
 import pytest
 import numpy as np
 import pandas as pd
-from kirby.data.data import IrregularTimeSeries, ArrayDict
+from kirby.data.data import IrregularTimeSeries, RegularTimeSeries, ArrayDict
 
 
 def test_sortedness():
@@ -12,6 +12,21 @@ def test_sortedness():
     assert not a.sorted
     a = a.slice(0, 1)
     assert np.allclose(a.timestamps, np.array([0, 1]))
+
+def test_regulartimeseries():
+    a = RegularTimeSeries(lfp=np.random.random((100, 48)),sampling_rate=10)
+
+    assert a.end == 10
+
+    b = a.slice(0, 5)
+    assert np.allclose(b.lfp, a.lfp[:50])
+    assert b.end == 5
+
+def test_regular_to_irregular_timeseries():
+    a = RegularTimeSeries(lfp=np.random.random((100, 48)),sampling_rate=10)
+    b = a.to_irregular()
+    assert np.allclose(b.timestamps, np.arange(0, 10, 0.1))
+    assert np.allclose(b.lfp, a.lfp)
 
 def test_from_dataframe():
     # Create a sample DataFrame
