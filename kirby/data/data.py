@@ -951,12 +951,19 @@ class Data(object):
 
         for key, value in self.__dict__.items():
             if key in request_tree:
-                assert isinstance(
+                if isinstance(
                     value, (Data, RegularTimeSeries, IrregularTimeSeries, Interval)
-                ), f"Cannot slice {key} of type {type(value)}."
-                out.__dict__[key] = value.slice(
-                    start, end, request_keys=request_tree[key]
-                )
+                ):
+                    out.__dict__[key] = value.slice(
+                        start, end, request_keys=request_tree[key]
+                    )
+                elif isinstance(value, ArrayDict):
+                    out.__dict__[key] = copy.copy(value)
+                else:
+                    raise ValueError(
+                        f"Requested key '{key}' if of type {type(value)}, which is not "
+                        f"supported for slicing."
+                    )
             elif key in request_tree["_root"]:
                 if isinstance(
                     value, (RegularTimeSeries, IrregularTimeSeries, Interval)
