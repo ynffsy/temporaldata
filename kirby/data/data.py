@@ -135,21 +135,21 @@ class ArrayDict(object):
                         np_arr = np_arr.astype(np.int64)
                     data[column] = np_arr
                 else:
-                    logging.warn(
+                    logging.warning(
                         f"The ndarrays in column '{column}' do not all have the same shape."
                     )
             elif allow_string_ndarray and isinstance(df[column].iloc[0], str):
                 try: # try to see if unicode strings can be converted to fixed length ASCII bytes
                     df[column].to_numpy(dtype="S")
                 except UnicodeEncodeError:
-                    logging.warn(
+                    logging.warning(
                         f"Unable to convert column '{column}' to a numpy array. Skipping."
                     )
                 else:
                     data[column] = df[column].to_numpy()
 
             else:
-                logging.warn(
+                logging.warning(
                     f"Unable to convert column '{column}' to a numpy array. Skipping."
                 )
         return cls(**data)
@@ -369,7 +369,7 @@ class IrregularTimeSeries(ArrayDict):
 
     def to_hdf5(self, file):
         if not self.sorted:
-            logging.warn("time series is not sorted, sorting before saving to h5")
+            logging.warning("time series is not sorted, sorting before saving to h5")
             self.sort()
 
         for key in self.keys:
@@ -770,7 +770,7 @@ class Interval(ArrayDict):
         setattr(self, f"{name}_mask", mask_array)
 
     def allow_split_mask_overlap(self):
-        logging.warn(
+        logging.warning(
             f"You are disabling the check for split mask overlap. "
             f"This means there could be an overlap between the intervals "
             f"across different splits. "
@@ -955,12 +955,19 @@ class Data(object):
 
         for key, value in self.__dict__.items():
             if key in request_tree:
-                assert isinstance(
+                if isinstance(
                     value, (Data, RegularTimeSeries, IrregularTimeSeries, Interval)
-                ), f"Cannot slice {key} of type {type(value)}."
-                out.__dict__[key] = value.slice(
-                    start, end, request_keys=request_tree[key]
-                )
+                ):
+                    out.__dict__[key] = value.slice(
+                        start, end, request_keys=request_tree[key]
+                    )
+                elif isinstance(value, ArrayDict):
+                    out.__dict__[key] = copy.copy(value)
+                else:
+                    raise ValueError(
+                        f"Requested key '{key}' if of type {type(value)}, which is not "
+                        f"supported for slicing."
+                    )
             elif key in request_tree["_root"]:
                 if isinstance(
                     value, (RegularTimeSeries, IrregularTimeSeries, Interval)
