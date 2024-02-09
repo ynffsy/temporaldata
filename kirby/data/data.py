@@ -286,6 +286,8 @@ class IrregularTimeSeries(ArrayDict):
         if request_keys is None:
             request_keys = self.keys
 
+        request_keys = request_keys + ["timestamps"]
+
         assert "timestamps" in request_keys
 
         if not self._lazy:
@@ -649,6 +651,8 @@ class Interval(ArrayDict):
     def slice(self, start: float, end: float, request_keys: Optional[List[str]] = None):
         if request_keys is None:
             request_keys = self.keys
+        
+        request_keys = request_keys + ["start", "end"]
 
         if self._lazy:
             # load the request keys only and return a new object
