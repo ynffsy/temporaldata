@@ -30,9 +30,38 @@ from kirby.taxonomy import Dictable, RecordingTech, StringIntEnum
 class ArrayDict(object):
     r"""A dictionary of arrays that share the same first dimension.
 
+    Args:
+        **kwargs: Arrays that shares the same first dimension.
+
+    .. code-block:: python
+
+        import numpy as np
+        from kirby.data import ArrayDict
+
+        units = ArrayDict(
+            unit_id=np.array(["unit01", "unit02"]),
+            brain_region=np.array(["M1", "M1"]),
+            waveform_mean=np.zeros((2, 48)),
+        )
+
+        units
+        >>> ArrayDict(
+            unit_id=[2],
+            brain_region=[2],
+            waveform_mean=[2, 48]
+        )
+
+        units.keys
+        >>> ['unit_id', 'brain_region', 'waveform_mean']
+
+        'waveform_mean' in units
+        >>> True
+
+
     .. note::
-        Private attributes (starting with an underscore) do not need to be arrays, or
-        have the same first dimension as the other attributes.
+        Private attributes (starting with an underscore) do not need to be arrays,
+        or have the same first dimension as the other attributes. They will not be
+        listed in :prop:`keys`.
     """
 
     def __init__(self, **kwargs):
@@ -93,22 +122,15 @@ class ArrayDict(object):
     @classmethod
     def from_dataframe(cls, df, unsigned_to_long=True, allow_string_ndarray=True):
         """
-        Create an `ArrayDict` object from a Pandas DataFrame.
+        Create an :obj:`ArrayDict` object from a pandas DataFrame.
 
-        The columns in the DataFrame are converted to arrays or lists based on their data types.
-        Numeric columns are converted to numpy arrays.
-        Unsigned integers can be optionally converted to int64 dtype ndarrays.
-        Columns containing ndarrays are stacked if they have the same shape.
-        Once stacked, the numpy arrays are optionally converted to int64 dtype.
-        Columns containing strings are optionally mapped converted to string ndarrays.
+        The columns in the DataFrame are converted to arrays when possible, otherwise
+        they will be skipped.
 
         Args:
-            df (pandas.DataFrame): The input DataFrame.
-            unsigned_to_long (bool, optional): Whether to convert unsigned integers to int64 dtype inside numpy arrays. Defaults to `True`.
-            allow_string_ndarray (bool, optional): Whether to convert strings to numpy arrays. If this is set to `False`, string columns will be skipped. Defaults to `True`.
-
-        Returns:
-            ArrayDict: The created `ArrayDict` object.
+            df (pandas.DataFrame): DataFrame.
+            unsigned_to_long (bool, optional): Whether to automatically convert unsigned
+              integers to int64 dtype. Defaults to :obj:`True`.
         """
         data = {}
         for column in df.columns:
@@ -155,6 +177,25 @@ class ArrayDict(object):
         return cls(**data)
 
     def to_hdf5(self, file):
+        r"""Saves the data object to an HDF5 file.
+
+        Args:
+            file (h5py.File): HDF5 file.
+
+        .. code-block:: python
+
+            import h5py
+            from kirby.data import ArrayDict
+
+            data = ArrayDict(
+                unit_id=np.array(["unit01", "unit02"]),
+                brain_region=np.array(["M1", "M1"]),
+                waveform_mean=np.zeros((2, 48)),
+            )
+
+            with h5py.File("data.h5", "w") as f:
+                data.to_hdf5(f)
+        """
         unicode_type_keys = []
         for key in self.keys:
             value = getattr(self, key)
@@ -176,6 +217,19 @@ class ArrayDict(object):
 
     @classmethod
     def from_hdf5(cls, file):
+        r"""Loads the data object from an HDF5 file.
+
+        Args:
+            file (h5py.File): HDF5 file.
+
+        .. code-block:: python
+
+            import h5py
+            from kirby.data import ArrayDict
+
+            with h5py.File("data.h5", "r") as f:
+                data = ArrayDict.from_hdf5(f)
+        """
         assert file.attrs["object"] == cls.__name__, "object type mismatch"
         data = {}
         unicode_type_keys = file.attrs["unicode_type_keys"].astype(str).tolist()
@@ -199,6 +253,37 @@ class IrregularTimeSeries(ArrayDict):
             attributes.
         **kwargs: Arbitrary keyword arguments where the values are arbitrary
             multi-dimensional (2d, 3d, ..., nd) arrays with shape (N, *).
+
+    .. code-block:: python
+
+        import numpy as np
+        from kirby.data import IrregularTimeSeries
+
+        spikes = IrregularTimeseries(
+            unit_index=np.array([0, 0, 1, 0, 1, 2]),
+            timestamps=np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6]),
+            waveforms=np.zeros((6, 48)),
+        )
+
+        spikes
+        >>> IrregularTimeseries(
+            unit_index=[6],
+            timestamps=[6],
+            waveforms=[6, 48]
+        )
+
+        spikes.keys
+        >>> ['unit_index', 'timestamps', 'waveforms']
+
+        spikes.sorted
+        >>> True
+
+        spikes.slice(0.2, 0.5)
+        >>> IrregularTimeseries(
+            unit_index=[3],
+            timestamps=[3],
+            waveforms=[3, 48]
+        )
     """
     _lazy = False
     _sorted = None
@@ -235,6 +320,7 @@ class IrregularTimeSeries(ArrayDict):
 
     @property
     def sorted(self):
+        r"""Returns :obj:`True` if the timestamps are sorted."""
         # check if we already know that the sequence is sorted
         # if lazy loading, we'll have to skip this check
         if self._sorted is None and not self._lazy:
@@ -247,6 +333,8 @@ class IrregularTimeSeries(ArrayDict):
 
     @property
     def start(self) -> float:
+        r"""Returns the start time of the time series. If the time series is not sorted,
+        the start time is the minimum timestamp."""
         if self._lazy and self._start is None:
             raise ValueError("Cannot compute start time of lazy time series.")
 
@@ -260,6 +348,8 @@ class IrregularTimeSeries(ArrayDict):
 
     @property
     def end(self) -> float:
+        r"""Returns the end time of the time series. If the time series is not sorted,
+        the end time is the maximum timestamp."""
         if self._lazy and self._end is None:
             raise ValueError("Cannot compute end time of lazy time series.")
 
@@ -272,7 +362,8 @@ class IrregularTimeSeries(ArrayDict):
         return self._end
 
     def sort(self):
-        r"""Sorts the timestamps."""
+        r"""Sorts the timestamps, and reorders the other attributes accordingly. 
+        This method is done in place."""
         if self._lazy:
             raise ValueError("Cannot sort lazy time series.")
 
@@ -283,6 +374,15 @@ class IrregularTimeSeries(ArrayDict):
         self._sorted = True
 
     def slice(self, start: float, end: float, request_keys: Optional[List[str]] = None):
+        r"""Returns a new :obj:`IrregularTimeSeries` object that contains the data
+        between the start and end times.
+
+        Args:
+            start: Start time.
+            end: End time.
+            request_keys: List of keys to include in the returned object. If
+                :obj:`None`, all keys will be included.
+        """
         if request_keys is None:
             request_keys = self.keys
 
@@ -344,17 +444,14 @@ class IrregularTimeSeries(ArrayDict):
             # the slice we get is only precise to the 1sec, so we re-slice
             return out.slice(start, end)
 
-    def add_split_mask(
-        self,
-        name: str,
-        interval: Interval,
-    ):
+    def add_split_mask(self, name: str, interval: Interval):
         """Create a boolean mask array with True for all timestamps that are within the
         intervals.
+
         Args:
             name: name of the mask. The mask attribute will be called <name>_mask
-            interval: Interval object. We will consider all timestamps that are within
-                the intervals [start, end) as having a True mask.
+            interval: :obj:`Interval` object. We will consider all timestamps that are 
+                within the intervals [start, end) as having a True mask.
         """
         assert not hasattr(self, f"{name}_mask"), (
             f"Attribute {name}_mask already exists. Use another mask name, or rename "
@@ -368,6 +465,25 @@ class IrregularTimeSeries(ArrayDict):
         setattr(self, f"{name}_mask", mask_array)
 
     def to_hdf5(self, file):
+        r"""Saves the data object to an HDF5 file.
+
+        Args:
+            file (h5py.File): HDF5 file.
+
+        .. code-block:: python
+
+            import h5py
+            from kirby.data import IrregularTimeseries
+
+            data = IrregularTimeseries(
+                unit_index=np.array([0, 0, 1, 0, 1, 2]),
+                timestamps=np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6]),
+                waveforms=np.zeros((6, 48)),
+            )
+
+            with h5py.File("data.h5", "w") as f:
+                data.to_hdf5(f)
+        """
         if not self.sorted:
             logging.warning("time series is not sorted, sorting before saving to h5")
             self.sort()
@@ -395,6 +511,19 @@ class IrregularTimeSeries(ArrayDict):
 
     @classmethod
     def from_hdf5(cls, file):
+        r"""Loads the data object from an HDF5 file.
+
+        Args:
+            file (h5py.File): HDF5 file.
+
+        .. code-block:: python
+
+            import h5py
+            from kirby.data import IrregularTimeSeries
+
+            with h5py.File("data.h5", "r") as f:
+                data = IrregularTimeSeries.from_hdf5(f)
+        """
         assert file.attrs["object"] == cls.__name__, "object type mismatch"
         data = {}
         for key, value in file.items():
@@ -418,13 +547,38 @@ class IrregularTimeSeries(ArrayDict):
 class RegularTimeSeries(ArrayDict):
     """A regular time series is the same as an irregular time series, but it has a
     regular sampling rate. This allows for faster indexing and meaningful Fourier
-    operations.
-
-    The first dimension of all attributes must be the time dimension.
+    operations. The first dimension of all attributes must be the time dimension.
 
     .. note:: If you have a matrix of shape (N, T), where N is the number of channels
     and T is the number of time points, you should transpose it to (T, N) before passing
     it to the constructor, since the first dimension should always be time.
+
+    Args:
+        sampling_rate: Sampling rate in Hz.
+        **kwargs: Arbitrary keyword arguments where the values are arbitrary
+            multi-dimensional (2d, 3d, ..., nd) arrays with shape (N, *).
+
+    
+    .. code-block:: python
+
+        import numpy as np
+        from kirby.data import RegularTimeSeries
+
+        lfp = RegularTimeSeries(
+            raw=np.zeros((1000, 128)),
+            sampling_rate=250.,
+        )
+
+        lfp.slice(0, 1)
+        >>> RegularTimeSeries(
+            raw=[250, 128]
+        )
+
+        lfp.to_irregular()
+        >>> IrregularTimeSeries(
+            timestamps=[1000],
+            raw=[1000, 128]
+        )
     """
 
     _lazy = False
@@ -448,17 +602,23 @@ class RegularTimeSeries(ArrayDict):
 
     @property
     def sampling_rate(self) -> float:
+        r"""Returns the sampling rate in Hz."""
         return self._sampling_rate
 
     @property
     def start(self) -> float:
+        r"""Returns the start time of the time series."""
         return 0.0
 
     @property
     def end(self) -> float:
+        r"""Returns the end time of the time series."""
         return self.start + len(self) / self.sampling_rate
 
     def slice(self, start: float, end: float, request_keys: Optional[List[str]] = None):
+        r"""Returns a new :obj:`RegularTimeSeries` object that contains the data between
+        the start and end times.
+        """
         if request_keys is None:
             request_keys = self.keys
 
@@ -511,9 +671,28 @@ class RegularTimeSeries(ArrayDict):
 
     @property
     def timestamps(self):
+        r"""Returns the timestamps of the time series."""
         return np.arange(self.start, self.end, 1.0 / self.sampling_rate) 
 
     def to_hdf5(self, file):
+        r"""Saves the data object to an HDF5 file.
+
+        Args:
+            file (h5py.File): HDF5 file.
+
+        .. code-block:: python
+            
+                import h5py
+                from kirby.data import RegularTimeSeries
+    
+                data = RegularTimeSeries(
+                    raw=np.zeros((1000, 128)),
+                    sampling_rate=250.,
+                )
+    
+                with h5py.File("data.h5", "w") as f:
+                    data.to_hdf5(f)
+        """
         for key in self.keys:
             value = getattr(self, key)
             file.create_dataset(key, data=value)
@@ -523,6 +702,19 @@ class RegularTimeSeries(ArrayDict):
 
     @classmethod
     def from_hdf5(cls, file):
+        r"""Loads the data object from an HDF5 file.
+        
+        Args:
+            file (h5py.File): HDF5 file.
+            
+        .. code-block:: python
+        
+            import h5py
+            from kirby.data import RegularTimeSeries
+
+            with h5py.File("data.h5", "r") as f:
+                data = RegularTimeSeries.from_hdf5(f)
+        """
         assert file.attrs["object"] == cls.__name__, "object type mismatch"
 
         data = {}
@@ -537,7 +729,67 @@ class RegularTimeSeries(ArrayDict):
 
 class Interval(ArrayDict):
     r"""An interval object is a set of time intervals each defined by a start time and
-    an end time."""
+    an end time.
+    
+    Args:
+        start: an array of start times of shape (N,).
+        end: an array of end times of shape (N,).
+        timekeys: a list of strings that specify which attributes are time-based
+            attributes.
+        **kwargs: Arbitrary keyword arguments where the values are arbitrary
+            multi-dimensional (2d, 3d, ..., nd) arrays with shape (N, *).
+
+    .. code-block:: python
+    
+        import numpy as np
+        from kirby.data import Interval
+
+        intervals = Interval(
+            start=np.array([0, 1, 2]),
+            end=np.array([1, 2, 3]),
+            go_cue_time=np.array([0.5, 1.5, 2.5]),
+            drifting_gratins_dir=np.array([0, 45, 90]),
+            timekeys=["start", "end", "go_cue_time"],
+        )
+
+        intervals
+        >>> Interval(
+            start=[3],
+            end=[3],
+            go_cue_time=[3],
+            drifting_gratins_dir=[3]
+        )
+
+        intervals.keys
+        >>> ['start', 'end', 'go_cue_time', 'drifting_gratins_dir']
+
+        intervals.sorted
+        >>> True
+
+        intervals.disjoint
+        >>> True
+
+        intervals.slice(0.5, 2.5)
+        >>> Interval(
+            start=[2],
+            end=[2],
+            go_cue_time=[2],
+            drifting_gratins_dir=[2]
+        )
+
+    :obj:`Interval` objects can be indexed with a binary mask, which will return a new
+    :obj:`Interval` object with the selected elements and their corresponding attributes.
+
+    .. code-block:: python
+    
+            intervals[[True, False, True]]
+            >>> Interval(
+                start=[2],
+                end=[2],
+                go_cue_time=[2],
+                drifting_gratins_dir=[2]
+            )
+    """
     _sorted = None
     _allow_split_mask_overlap = False
     _lazy = False
@@ -569,6 +821,8 @@ class Interval(ArrayDict):
 
     @property
     def disjoint(self):
+        r"""Returns :obj:`True` if the intervals are disjoint, i.e. if no two intervals
+        overlap."""
         # check if we already know that the sequence is sorted
         # if lazy loading, we'll have to skip this check
         if self._lazy:
@@ -581,6 +835,7 @@ class Interval(ArrayDict):
 
     @property
     def sorted(self):
+        r"""Returns :obj:`True` if the intervals are sorted."""
         # check if we already know that the sequence is sorted
         # if lazy loading, we'll have to skip this check
         if self._sorted is None and not self._lazy:
@@ -590,7 +845,13 @@ class Interval(ArrayDict):
         return self._sorted
 
     def sort(self):
-        r"""Sorts the timestamps."""
+        r"""Sorts the intervals, and reorders the other attributes accordingly.
+        This method is done in place. 
+
+        .. note:: This method only works if the intervals are disjoint. If the intervals
+        overlap, it is not possible to resolve the order of the intervals, and this 
+        method will raise an error.
+        """
         if self._lazy:
             raise ValueError("Cannot sort lazy time series.")
         if not self.sorted:
@@ -649,6 +910,16 @@ class Interval(ArrayDict):
             return out
 
     def slice(self, start: float, end: float, request_keys: Optional[List[str]] = None):
+        r"""Returns a new :obj:`Interval` object that contains the data between the 
+        start and end times. An interval is included if it has any overlap with the 
+        slicing window.
+        
+        Args:
+            start: Start time.
+            end: End time.
+            request_keys: List of keys to include in the returned object. If
+                :obj:`None`, all keys will be included.
+        """
         if request_keys is None:
             request_keys = self.keys
         
@@ -770,6 +1041,9 @@ class Interval(ArrayDict):
         setattr(self, f"{name}_mask", mask_array)
 
     def allow_split_mask_overlap(self):
+        r"""Disables the check for split mask overlap. This means there could be an
+        overlap between the intervals across different splits. This is useful when
+        splitting the intervals into multiple splits."""
         logging.warning(
             f"You are disabling the check for split mask overlap. "
             f"This means there could be an overlap between the intervals "
@@ -779,7 +1053,13 @@ class Interval(ArrayDict):
 
     @classmethod
     def linspace(cls, start: float, end: float, steps: int):
-        """Create a regular interval with a given number of samples."""
+        r"""Create a regular interval with a given number of samples.
+        
+        Args:
+            start: Start time.
+            end: End time.
+            steps: Number of samples.
+        """
         timestamps = np.linspace(start, end, steps + 1)
         return cls(
             start=timestamps[:-1],
@@ -788,15 +1068,17 @@ class Interval(ArrayDict):
 
     @classmethod
     def from_dataframe(cls, df):
-        r"""Create an :obj:`Interval` object from a Pandas dataframe. The dataframe
+        r"""Create an :obj:`Interval` object from a pandas DataFrame. The dataframe
         must have a start time and end time columns. The names of these columns need
         to be "start" and "end" (use `pd.Dataframe.rename` if needed).
 
-        Columns that are numeric will be converted to ndarrays. Columns that are
-        ndarrays will be stacked if they share the same size. Any other column type will
-        be skipped.
+        The columns in the DataFrame are converted to arrays when possible, otherwise
+        they will be skipped.
 
-        # todo: add support for string ndarrays
+        Args:
+            df (pandas.DataFrame): DataFrame.
+            unsigned_to_long (bool, optional): Whether to automatically convert unsigned
+              integers to int64 dtype. Defaults to :obj:`True`.
 
         Raises:
             AssertionError: if the start or end column is not found in the dataframe.
@@ -804,7 +1086,6 @@ class Interval(ArrayDict):
             the dataframe.
             Warning: if a column is not numeric or an ndarray.
         """
-
         assert "start" in df.columns, f"Column 'start' not found in dataframe."
         assert "end" in df.columns, f"Column 'end' not found in dataframe."
 
@@ -813,16 +1094,45 @@ class Interval(ArrayDict):
     @classmethod
     def from_list(cls, interval_list: List[Tuple[float, float]]):
         r"""Create an :obj:`Interval` object from a list of (start, end) tuples.
-        Example:
-            >>> interval_list = [(0, 1), (1, 2), (2, 3)]
-            >>> interval = Interval.from_list(interval_list)
-            >>> interval.start, interval.end
-            (array([0, 1, 2]), array([1, 2, 3]))
+
+        Args:
+            interval_list: List of (start, end) tuples.
+
+        .. code-block:: python
+            
+            from kirby.data import Interval
+
+            interval_list = [(0, 1), (1, 2), (2, 3)]
+            interval = Interval.from_list(interval_list)
+
+            interval.start, interval.end
+            >>> (array([0, 1, 2]), array([1, 2, 3]))
         """
         start, end = zip(*interval_list)  # Unzip the list of tuples
         return cls(start=np.array(start), end=np.array(end))
 
     def to_hdf5(self, file):
+        r"""Saves the data object to an HDF5 file.
+
+        Args:
+            file (h5py.File): HDF5 file.
+        
+        .. code-block:: python
+                
+                import h5py
+                from kirby.data import Interval
+    
+                interval = Interval(
+                    start=np.array([0, 1, 2]),
+                    end=np.array([1, 2, 3]),
+                    go_cue_time=np.array([0.5, 1.5, 2.5]),
+                    drifting_gratins_dir=np.array([0, 45, 90]),
+                    timekeys=["start", "end", "go_cue_time"],
+                )
+    
+                with h5py.File("data.h5", "w") as f:
+                    interval.to_hdf5(f)
+        """
         unicode_type_keys = []
         for key in self.keys:
             value = getattr(self, key)
@@ -846,6 +1156,19 @@ class Interval(ArrayDict):
 
     @classmethod
     def from_hdf5(cls, file):
+        r"""Loads the data object from an HDF5 file.
+        
+        Args:
+            file (h5py.File): HDF5 file.
+            
+        .. code-block:: python
+        
+            import h5py
+            from kirby.data import Interval
+
+            with h5py.File("data.h5", "r") as f:
+                interval = Interval.from_hdf5(f)
+        """
         assert file.attrs["object"] == cls.__name__, "object type mismatch"
         data = {}
         unicode_type_keys = file.attrs["unicode_type_keys"].astype(str).tolist()
@@ -903,6 +1226,104 @@ AttrTensor = Union[np.ndarray, ArrayDict]
 
 
 class Data(object):
+    r"""A data object is a container for other data objects such as :obj:`ArrayDict`,
+     :obj:`RegularTimeSeries`, :obj:`IrregularTimeSeries`, and :obj:`Interval` objects. 
+     But also regular objects like sclars, strings and numpy arrays.
+
+    Args:
+        start: Start time.
+        end: End time.
+        **kwargs: Arbitrary attributes.
+
+    .. code-block:: python
+
+        import numpy as np
+        from kirby.data import (
+            ArrayDict, 
+            IrregularTimeSeries, 
+            RegularTimeSeries, 
+            Interval,
+            Data,
+        )
+
+        data = Data(
+            start=0.0,
+            end=4.0,
+            session_id="session_0",
+            spikes=IrregularTimeSeries(
+                timestamps=np.array([0.1, 0.2, 0.3, 2.1, 2.2, 2.3]),
+                unit_index=np.array([0, 0, 1, 0, 1, 2]),
+                waveforms=np.zeros((6, 48)),
+            ),
+            lfp=RegularTimeSeries(
+                raw=np.zeros((1000, 3)),
+                sampling_rate=250.,
+            ),
+            units=ArrayDict(
+                id=np.array(["unit_0", "unit_1", "unit_2"]),
+                brain_region=np.array(["M1", "M1", "PMd"]),
+            ),
+            trials=Interval(
+                start=np.array([0, 1, 2]),
+                end=np.array([1, 2, 3]),
+                go_cue_time=np.array([0.5, 1.5, 2.5]),
+                drifting_gratings_dir=np.array([0, 45, 90]),
+            ),
+            drifting_gratings_imgs=np.zeros((8, 3, 32, 32)),
+        )
+
+        data
+        >>> Data(
+            start=0.0,
+            end=4.0,
+            session_id='session_0',
+            spikes=IrregularTimeSeries(
+                timestamps=[6],
+                unit_index=[6],
+                waveforms=[6, 48]
+            ),
+            lfp=RegularTimeSeries(
+                raw=[1000, 3]
+            ),
+            units=ArrayDict(
+                id=[3],
+                brain_region=[3]
+            ),
+            trials=Interval(
+                start=[3],
+                end=[3],
+                go_cue_time=[3],
+                drifting_gratings_dir=[3]
+            ),
+            drifting_gratings_imgs=[8, 3, 32, 32]
+        )
+
+        data.slice(1, 3)
+        >>> Data(
+            start=0.,
+            end=2.,
+            session_id='session_0',
+            spikes=IrregularTimeSeries(
+                timestamps=[4],
+                unit_index=[4],
+                waveforms=[4, 48]
+            ),
+            lfp=RegularTimeSeries(
+                raw=[500, 3]
+            ),
+            units=ArrayDict(
+                id=[3],
+                brain_region=[3]
+            ),
+            trials=Interval(
+                start=[2],
+                end=[2],
+                go_cue_time=[2],
+                drifting_gratings_dir=[2]
+            ),
+            drifting_gratings_imgs=[8, 3, 32, 32]
+        )
+    """
     def __init__(
         self,
         *,
@@ -942,6 +1363,23 @@ class Data(object):
         super(Data, self).__setattr__(name, value)
 
     def slice(self, start: float, end: float, request_keys: Optional[List[str]] = None):
+        r"""Returns a new :obj:`Data` object that contains the data between the start 
+        and end times. This method will slice all time-based attributes that are present
+        in the data object.
+
+        .. note::
+            `request_keys` is a list of keys to include in the returned object. The keys
+            in the request_keys list can be nested using dots. For example, if the
+            request_keys list is ["spikes.timestamps", "spikes.unit_index"], the
+            returned object will only contain the timestamps and unit_index attributes
+            of the spikes object.
+
+        Args:
+            start: Start time.
+            end: End time.
+            request_keys: List of keys to include in the returned object. If
+                :obj:`None`, all keys will be included.
+        """
         if self.start is None:
             # this data object does not have any time-based attributes
             return copy.deepcopy(self)
@@ -1003,6 +1441,24 @@ class Data(object):
         return copy.deepcopy(self.__dict__)
 
     def to_hdf5(self, file):
+        r"""Saves the data object to an HDF5 file. This method will also call the 
+        `to_hdf5` method of all contained data objects, so that the entire data object
+        is saved to the HDF5 file, i.e. no need to call `to_hdf5` for each contained
+        data object.
+
+        Args:
+            file (h5py.File): HDF5 file.
+
+        .. code-block:: python
+
+                import h5py
+                from kirby.data import Data
+
+                data = Data(...)
+
+                with h5py.File("data.h5", "w") as f:
+                    data.to_hdf5(f)
+        """
         for key, value in self.__dict__.items():
             if isinstance(value, (Data, ArrayDict)):
                 grp = file.create_group(key)
@@ -1017,6 +1473,22 @@ class Data(object):
 
     @classmethod
     def from_hdf5(cls, file):
+        r"""Loads the data object from an HDF5 file. This method will also call the
+        `from_hdf5` method of all contained data objects, so that the entire data object
+        is loaded from the HDF5 file, i.e. no need to call `from_hdf5` for each contained
+        data object.
+        
+        Args:
+            file (h5py.File): HDF5 file.
+            
+        .. code-block:: python
+        
+            import h5py
+            from kirby.data import Data
+
+            with h5py.File("data.h5", "r") as f:
+                data = Data.from_hdf5(f)
+        """
         data = {}
         for key, value in file.items():
             if isinstance(value, h5py.Group):
@@ -1076,6 +1548,13 @@ class Data(object):
         return key in self.keys
 
     def get_nested_attribute(self, path: str) -> Any:
+        r"""Returns the attribute specified by the path. The path can be nested using
+        dots. For example, if the path is "spikes.timestamps", this method will return
+        the timestamps attribute of the spikes object.
+
+        Args:
+            path: Nested attribute path.
+        """
         # Split key by dots, resolve using getattr
         components = path.split(".")
         out = self
