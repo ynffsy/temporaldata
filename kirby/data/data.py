@@ -931,7 +931,11 @@ class Interval(ArrayDict):
             out._timekeys = self._timekeys
 
             for key in self.keys:
-                if key in request_keys:
+                if key in request_keys or key in [
+                    "train_mask",
+                    "val_mask",
+                    "test_mask",
+                ]:
                     out.__dict__[key] = self.__dict__[key][:]  # load into memory
 
             return out.slice(start, end, request_keys=request_keys)
