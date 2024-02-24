@@ -75,12 +75,12 @@ def test_split():
     print(result[0].end, result[1].end)
     expected = [
         Interval(
-            start=np.array([0.5000, 0.6000, 0.0000, 0.7000, 0.3000]),
-            end=np.array([0.6000, 0.7000, 0.1000, 0.8000, 0.4000]),
+            start=np.array([0.0, 0.3, 0.5, 0.6, 0.7]),
+            end=np.array([0.1, 0.4, 0.6, 0.7, 0.8]),
         ),
         Interval(
-            start=np.array([0.2000, 0.4000, 0.9000, 0.1000, 0.8000]),
-            end=np.array([0.3000, 0.5000, 1.0000, 0.2000, 0.9000]),
+            start=np.array([0.1, 0.2, 0.4, 0.8, 0.9]),
+            end=np.array([0.2, 0.3, 0.5, 0.9, 1.0]),
         ),
     ]
     assert len(result) == len(expected)
@@ -99,7 +99,7 @@ def test_and():
     I1 = Interval.from_list([(1.0, 2.3)])
     I2 = Interval.from_list([(1.7, 6.9)])
     Iexp = Interval.from_list([(1.7, 2.3)])
-    easy_check(I1, I2, Iexp, op)
+    easy_symmetric_check(I1, I2, Iexp, op)
 
     I1 = Interval.from_list([
         (1.0, 2.3),
@@ -121,7 +121,12 @@ def test_and():
         (8.2, 9.0),
         (9.5, 10.0),
     ])
-    easy_check(I1, I2, Iexp, op)
+    easy_symmetric_check(I1, I2, Iexp, op)
+
+    I1 = Interval.from_list([(0., 1.), (1.7, 6.9)])
+    I2 = Interval.from_list([(0., 1.), (6.9, 8.4)])
+    Iexp = Interval.from_list([(0., 1.),])
+    easy_symmetric_check(I1, I2, Iexp, op)
 
 
 def test_or():
@@ -186,6 +191,21 @@ def test_difference():
         (12.0, 13.0),
     ])
     easy_check(I1, I2, Iexp, op)
+
+    I1 = Interval.from_list([(1.0, 10.)])
+    I2 = Interval.from_list([(1.7, 6.9), (6.9, 8.4)])
+    Iexp = Interval.from_list([(1.0, 1.7), (8.4, 10.)])
+    easy_check(I1, I2, Iexp, op)
+
+    I1 = Interval.from_list([(2.0, 10.)])
+    I2 = Interval.from_list([(1.0, 20.)])
+    Iexp = Interval(np.array([]), np.array([]))
+    easy_check(I1, I2, Iexp, op)
+
+    I1 = Interval.from_list([(1., 3.)])
+    I2 = Interval.from_list([(3., 5.)])
+    easy_check(I1, I2, I1, op)
+
 
 
 # helper function

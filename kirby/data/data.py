@@ -16,7 +16,6 @@ import logging
 
 import h5py
 import numpy as np
-import sortednp as snp
 import pandas as pd
 import torch
 
@@ -1587,63 +1586,54 @@ class Interval(ArrayDict):
         r"""Returns the difference between two sets of intervals. The intervals are 
         redefined as to not intersect with any interval in :obj:`other`.
         """
-        assert (
-            self.is_disjoint()
-        ), "left Interval object must be disjoint for intersection."
-        assert (
-            other.is_disjoint()
-        ), "right Interval object must be disjoint for intersection."
+        if not self.is_disjoint():
+            raise ValueError("left Interval object must be disjoint.")
+        if not other.is_disjoint():
+            raise ValueError("right Interval object must be disjoint.")
+        if not self.is_sorted():
+            raise ValueError("left Interval object must be sorted.")
+        if not other.is_sorted():
+            raise ValueError("right Interval object must be sorted.")
 
-        assert self.is_sorted(), "left Interval object must be sorted for intersection."
-        assert (
-            other.is_sorted()
-        ), "right Interval object must be sorted for intersection."
 
-        # Create sorted list of all times in first interval
-        times_l = np.empty(2 * len(self), dtype=self.start.dtype)
-        times_l[::2], times_l[1::2] = self.start, self.end
-        # Indicator array for when a time is a "start" time
-        start_indic_l = np.zeros(2 * len(self), dtype=int)
-        start_indic_l[1::2] = 1
-        # Create sorted list of all times in second interval
-        times_r = np.empty(2 * len(other), dtype=other.start.dtype)
-        times_r[::2], times_r[1::2] = other.start, other.end
-        # Indicator array for when a time is a "start" time
-        start_indic_r = np.ones(2 * len(other), dtype=int) * 2
-        start_indic_r[1::2] = 3
+        # new start and end arrays where the intersection will be stored
+        start = np.array([])
+        end = np.array([])
 
-        # perform merge-sort and reorder indicators too
-        times_merged, merge_indices = snp.merge(times_l, times_r, indices=True)
-        start_indic_merged = np.empty(len(times_merged), dtype=int)
-        start_indic_merged[merge_indices[0]] = start_indic_l
-        start_indic_merged[merge_indices[1]] = start_indic_r
+        # we use a variable to store the current opening time
+        current_start = None
+        interval_open_left = False
+        interval_open_right = False
 
-        # TODO clean this up
-        start_indices = []
-        end_indices = []
+        for ptime, pop, pl in sorted_traversal(self, other):
+            if pop:
+                # opening
+                if pl:
+                    if not interval_open_right:
+                        current_start = ptime
+                    interval_open_left = True
+                else:
+                    interval_open_right = True
+                    # we have an opening and a closing paranthesis
+                    if interval_open_left and current_start is not None and current_start != ptime:
+                        # we have a non-zero interval
+                        start = np.append(start, current_start)
+                        end = np.append(end, ptime)
+                        current_start = None
+            else:
+                # closing
+                if pl:
+                    if current_start is not None and current_start != ptime:
+                        # we have a non-zero interval
+                        start = np.append(start, current_start)
+                        end = np.append(end, ptime)
+                        current_start = None
+                    interval_open_left = False
+                else:
+                    interval_open_right = False
+                    if interval_open_left:
+                        current_start = ptime
 
-        ongoing_left = False
-        for i in range(len(times_merged)):
-            if start_indic_merged[i] == 0:
-                ongoing_left = True
-            elif start_indic_merged[i] == 1:
-                if start_indic_merged[i-1] in [0, 3]:
-                    start_indices.append(i-1)
-                    end_indices.append(i)
-                ongoing_left = False
-            elif start_indic_merged[i] == 2:
-                if start_indic_merged[i-1] == 0:
-                    start_indices.append(i-1)
-                    end_indices.append(i)
-                elif start_indic_merged[i-1] == 3 and ongoing_left:
-                    start_indices.append(i-1)
-                    end_indices.append(i)
-        
-        start_indices = np.array(start_indices)
-        end_indices = np.array(end_indices)
-        
-        start = times_merged[start_indices]
-        end = times_merged[end_indices]
         return Interval(start=start, end=end)
 
     def split(
@@ -1890,46 +1880,37 @@ class Interval(ArrayDict):
         Only start/end times are considered for the intersection,
         and only start/end times are returned in the resulting Interval
         """
-        assert (
-            self.is_disjoint()
-        ), "left Interval object must be disjoint for intersection."
-        assert (
-            other.is_disjoint()
-        ), "right Interval object must be disjoint for intersection."
+        if not self.is_disjoint():
+            raise ValueError("left Interval object must be disjoint.")
+        if not other.is_disjoint():
+            raise ValueError("right Interval object must be disjoint.")
+        if not self.is_sorted():
+            raise ValueError("left Interval object must be sorted.")
+        if not other.is_sorted():
+            raise ValueError("right Interval object must be sorted.")
 
-        assert self.is_sorted(), "left Interval object must be sorted for intersection."
-        assert (
-            other.is_sorted()
-        ), "right Interval object must be sorted for intersection."
+        # new start and end arrays where the intersection will be stored
+        start = np.array([])
+        end = np.array([])
 
-        # Create sorted list of all times in first interval
-        times_l = np.empty(2 * len(self), dtype=self.start.dtype)
-        times_l[::2], times_l[1::2] = self.start, self.end
-        # Indicator array for when a time is a "start" time
-        start_indic_l = np.zeros(2 * len(self), dtype=int)
-        start_indic_l[::2] = 1
+        # we use a variable to store the current opening time
+        current_start = None
+        
+        for ptime, pop, pl in sorted_traversal(self, other):
+            if pop:
+                # this is an opening paranthesis
+                # update current_start
+                current_start = ptime
+            else:
+                # this is a closing paranthesis
+                if current_start is not None:
+                    # we have an opening and a closing paranthesis
+                    if current_start != ptime:
+                        # we have a non-zero interval
+                        start = np.append(start, current_start)
+                        end = np.append(end, ptime)
+                    current_start = None
 
-        # Create sorted list of all times in second interval
-        times_r = np.empty(2 * len(other), dtype=other.start.dtype)
-        times_r[::2], times_r[1::2] = other.start, other.end
-        # Indicator array for when a time is a "start" time
-        start_indic_r = np.zeros(2 * len(other), dtype=int)
-        start_indic_r[::2] = 1
-
-        # perform merge-sort and reorder indicators too
-        times_merged, merge_indices = snp.merge(times_l, times_r, indices=True)
-        start_indic_merged = np.empty(len(times_merged), dtype=int)
-        start_indic_merged[merge_indices[0]] = start_indic_l
-        start_indic_merged[merge_indices[1]] = start_indic_r
-
-        # AND-ed intervals are where start-indicator changes from 1->0
-        start_indices = np.where(
-            (start_indic_merged[:-1] == 1) & (start_indic_merged[1:] == 0)
-        )[0]
-        end_indices = start_indices + 1
-
-        start = times_merged[start_indices]
-        end = times_merged[end_indices]
         return Interval(start=start, end=end)
 
     def __or__(self, other):
@@ -1937,50 +1918,58 @@ class Interval(ArrayDict):
         Only start/end times are considered for the union,
         and only start/end times are returned in the resulting Interval
         """
-        assert (
-            self.is_disjoint()
-        ), "left Interval object must be disjoint for intersection."
-        assert (
-            other.is_disjoint()
-        ), "right Interval object must be disjoint for intersection."
+        if not self.is_disjoint():
+            raise ValueError("left Interval object must be disjoint.")
+        if not other.is_disjoint():
+            raise ValueError("right Interval object must be disjoint.")
+        if not self.is_sorted():
+            raise ValueError("left Interval object must be sorted.")
+        if not other.is_sorted():
+            raise ValueError("right Interval object must be sorted.")
 
-        assert self.is_sorted(), "left Interval object must be sorted for intersection."
-        assert (
-            other.is_sorted()
-        ), "right Interval object must be sorted for intersection."
 
-        # Create sorted list of all times in first interval
-        times_l = np.empty(2 * len(self), dtype=self.start.dtype)
-        times_l[::2], times_l[1::2] = self.start, self.end
-        # Indicator array for when a time is a "start" time
-        start_indic_l = np.ones(2 * len(self), dtype=int)
-        start_indic_l[1::2] = -1
+        # new start and end arrays where the intersection will be stored
+        start = np.array([])
+        end = np.array([])
 
-        # Create sorted list of all times in second interval
-        times_r = np.empty(2 * len(other), dtype=other.start.dtype)
-        times_r[::2], times_r[1::2] = other.start, other.end
-        # Indicator array for when a time is a "start" time
-        start_indic_r = np.ones(2 * len(other), dtype=int)
-        start_indic_r[::2] = 1
-        start_indic_r[1::2] = -1
+        # we use a variable to store the current opening time
+        current_start = None
+        current_end = None
+        current_start_is_from_left = None
+        end_still_coming = False
 
-        # perform merge-sort and reorder indicators too
-        times_merged, merge_indices = snp.merge(times_l, times_r, indices=True)
-        start_indic_merged = np.empty(1 + len(times_merged), dtype=int)
-        start_indic_merged[0] = 0
-        start_indic_merged[merge_indices[0] + 1] = start_indic_l
-        start_indic_merged[merge_indices[1] + 1] = start_indic_r
-        cumsum = np.cumsum(start_indic_merged)  # this cumsum starts from 0
+        for ptime, pop, pl in sorted_traversal(self, other):
+            if pop:
+                if current_end is None:
+                    if current_start is None:
+                        current_start = ptime
+                        current_start_is_from_left = pl
+                        end_still_coming = True
+                else:
+                    assert current_start is not None
+                    if not end_still_coming:
+                        # we have an opening and a closing paranthesis
+                        if current_start != current_end:
+                            # we have a non-zero interval
+                            start = np.append(start, current_start)
+                            end = np.append(end, current_end)
+                        current_start = ptime
+                        current_end = None
+                        end_still_coming = True
+            else:
+                if pl == current_start_is_from_left:
+                    end_still_coming = False
+                current_end = ptime
 
-        # OR-ed intervals start when cumsum changes from 0 -> 1
-        # and end when cumsum is 0
-        start_indices = np.where((cumsum[:-1] == 0) & (cumsum[1:] == 1))[0]
-        end_indices = np.where(cumsum[1:] == 0)[0]
+        assert current_end is not None
+        assert current_start is not None
 
-        assert len(start_indices) == len(end_indices)
+        # we have an opening and a closing paranthesis
+        if current_start != current_end:
+            # we have a non-zero interval
+            start = np.append(start, current_start)
+            end = np.append(end, current_end)
 
-        start = times_merged[start_indices]
-        end = times_merged[end_indices]
         return Interval(start=start, end=end)
 
 
@@ -2187,6 +2176,60 @@ class LazyInterval(Interval):
         obj._lazy_ops = {}
 
         return obj
+
+
+def sorted_traversal(lintervals, rintervals):
+    # we use an index to iterate over the intervals from both left and right objects
+    lidx, ridx = 0, 0
+    # to track whether we are looking at start or end, we use a binary flag that 
+    # denotes whether the current pointer is an "opening paranthesis" (lop=True)
+    # or a "closing paranthesis" (lop=False)
+    lop, rop = True, True
+    
+    while (lidx < len(lintervals)) or (ridx < len(rintervals)):
+        # retrieve the time of the pointer in the left object
+        if lidx < len(lintervals):
+            # retrieve the time of the next interval in left object
+            ltime = lintervals.start[lidx] if lop else lintervals.end[lidx]
+        else:
+            # exhausted all intervals in left object
+            ltime = np.inf
+        
+        # retrieve the time of the pointer in the right object
+        if ridx < len(rintervals):
+            # retrieve the time of the next interval in right object
+            rtime = rintervals.start[ridx] if rop else rintervals.end[ridx]
+        else:
+            # exhausted all intervals in right object
+            rtime = np.inf
+        
+        # figure out which is the next pointer to process
+        if (ltime < rtime) or (ltime == rtime and lop):
+            # the next timestamps to consider is from the left object
+            ptime = ltime  # time of the current pointer
+            pop = lop  # True if pointer is opening
+            pl = True # True if pointer is from left object 
+            
+            # move the left pointer accordingly
+            if lop:
+                # we only considered the start time, we now need to consider the
+                # end before moving to the next interval
+                lop = False
+            else:
+                # move to the next interval
+                lop = True
+                lidx += 1
+        else:
+            # the next timestamps to consider is from the right object
+            ptime = rtime
+            pop = rop
+            pl = False
+            if rop:
+                rop = False
+            else:
+                rop = True
+                ridx += 1
+        yield ptime, pop, pl
 
 
 class Data(object):
