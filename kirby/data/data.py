@@ -1,11 +1,7 @@
-"""Inspired from PyG's data class."""
-
 from __future__ import annotations
 
 import copy
 from collections.abc import Mapping, Sequence
-from collections import defaultdict
-from dataclasses import dataclass
 from typing import (
     Any,
     Callable,
@@ -20,18 +16,18 @@ import logging
 
 import h5py
 import numpy as np
+import sortednp as snp
 import pandas as pd
 import torch
 
 
-from kirby.taxonomy import Dictable, RecordingTech, StringIntEnum
-
-
 class ArrayDict(object):
-    r"""A dictionary of arrays that share the same first dimension.
+    r"""A dictionary of arrays that share the same first dimension. The number of
+    dimensions for each array can be different, but they need to be at least
+    1-dimensional.
 
     Args:
-        **kwargs: Arrays that shares the same first dimension.
+        **kwargs: arrays that shares the same first dimension.
 
     .. code-block:: python
 
@@ -51,6 +47,9 @@ class ArrayDict(object):
             waveform_mean=[2, 48]
         )
 
+        len(units)
+        >>> 2
+
         units.keys
         >>> ['unit_id', 'brain_region', 'waveform_mean']
 
@@ -61,39 +60,54 @@ class ArrayDict(object):
     .. note::
         Private attributes (starting with an underscore) do not need to be arrays,
         or have the same first dimension as the other attributes. They will not be
-        listed in :prop:`keys`.
+        listed in :obj:`keys`.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs: Dict[str, np.ndarray]):
         for key, value in kwargs.items():
             self.__setattr__(key, value)
 
     @property
     def keys(self) -> List[str]:
-        r"""Returns a list of all attribute names."""
+        r"""List of all array attribute names."""
         return [x for x in self.__dict__.keys() if not x.startswith("_")]
 
     def _maybe_first_dim(self):
-        r"""If `ArrayDict` has at least one attribute, returns the first dimension of
-        the first attribute. Otherwise, returns :obj:`None`."""
+        # If self has at least one attribute, returns the first dimension of
+        # the first attribute. Otherwise, returns :obj:`None`.
         if len(self.keys) == 0:
             return None
         else:
             return self.__dict__[self.keys[0]].shape[0]
 
+    def __len__(self):
+        r"""Returns the first dimension shared by all attributes."""
+        first_dim = self._maybe_first_dim()
+        if first_dim is None:
+            raise ValueError(f"{self.__class__.__name__} is empty.")
+        return first_dim
+
     def __setattr__(self, name, value):
+        # for non-private attributes, we want to check that they are ndarrays
+        # and that they match the first dimension of existing attributes
         if not name.startswith("_"):
             # only ndarrays are accepted
-            assert isinstance(value, np.ndarray) or isinstance(
-                value, h5py.Dataset
-            ), f"{name} must be a numpy array or h5py.Dataset, got object of type {type(value)}"
+            assert isinstance(
+                value, np.ndarray
+            ), f"{name} must be a numpy array, got object of type {type(value)}"
+
+            if value.ndim == 0:
+                raise ValueError(
+                    f"{name} must be at least 1-dimensional, got 0-dimensional array."
+                )
 
             first_dim = self._maybe_first_dim()
             if first_dim is not None and value.shape[0] != first_dim:
                 raise ValueError(
                     f"All elements of {self.__class__.__name__} must have the same "
                     f"first dimension. The first dimension of {name} is "
-                    f"{value.shape[0]} but must be {first_dim}."
+                    f"{value.shape[0]} but the first dimension of existing attributes "
+                    f"is {first_dim}."
                 )
         super(ArrayDict, self).__setattr__(name, value)
 
@@ -101,39 +115,72 @@ class ArrayDict(object):
         r"""Returns :obj:`True` if the attribute :obj:`key` is present in the data."""
         return key in self.keys
 
-    def __copy__(self):
-        out = self.__class__.__new__(self.__class__)
-        for key, value in self.__dict__.items():
-            out.__dict__[key] = value
-        return out
-
-    def __deepcopy__(self, memo):
-        out = self.__class__.__new__(self.__class__)
-        for key, value in self.__dict__.items():
-            out.__dict__[key] = copy.deepcopy(value, memo)
-        return out
-
     def __repr__(self) -> str:
         cls = self.__class__.__name__
-        info = [size_repr(k, getattr(self, k), indent=2) for k in self.keys]
+        info = [size_repr(k, self.__dict__[k], indent=2) for k in self.keys]
         info = ",\n".join(info)
         return f"{cls}(\n{info}\n)"
 
-    @classmethod
-    def from_dataframe(cls, df, unsigned_to_long=True, allow_string_ndarray=True):
+    def select_by_mask(self, mask: np.ndarray, **kwargs):
+        r"""Return a new :obj:`ArrayDict` object where all array attributes are indexed
+        using the boolean mask.
+
+        .. code-block:: python
+
+            import numpy as np
+            from kirby.data import ArrayDict
+
+            data = ArrayDict(
+                unit_id=np.array(["unit01", "unit02"]),
+                brain_region=np.array(["M1", "M1"]),
+                waveform_mean=np.zeros((2, 48)),
+            )
+
+            data.select_by_mask(np.array([True, False]))
+            >>> ArrayDict(
+                unit_id=[1],
+                brain_region=[1],
+                waveform_mean=[1, 48]
+            )
         """
-        Create an :obj:`ArrayDict` object from a pandas DataFrame.
+        assert mask.ndim == 1, f"mask must be 1D, got {mask.ndim}D mask"
+        assert mask.dtype == bool, f"mask must be boolean, got {mask.dtype}"
+
+        first_dim = self._maybe_first_dim()
+        if mask.shape[0] != first_dim:
+            raise ValueError(
+                f"mask length {mask.shape[0]} does not match first dimension of arrays "
+                f"({first_dim})."
+            )
+
+        return self.__class__(**{k: getattr(self, k)[mask].copy() for k in self.keys}, **kwargs)
+
+    @classmethod
+    def from_dataframe(cls, df, unsigned_to_long=True, **kwargs):
+        r"""Creates an :obj:`ArrayDict` object from a pandas DataFrame.
 
         The columns in the DataFrame are converted to arrays when possible, otherwise
         they will be skipped.
 
         Args:
             df (pandas.DataFrame): DataFrame.
-            unsigned_to_long (bool, optional): Whether to automatically convert unsigned
-              integers to int64 dtype. Defaults to :obj:`True`.
+            unsigned_to_long (bool, optional): If :obj:`True`, automatically converts
+                unsigned integers to int64. Defaults to :obj:`True`.
         """
-        data = {}
+        data = {**kwargs}
         for column in df.columns:
+            if column in cls.__dict__.keys():
+                # We don't let users override existing attributes with this method,
+                # since that is most likely a mistake.
+                # Example: A dataframe might contain a 'split' attribute signifying
+                # train/val/test splits.
+                raise ValueError(
+                    f"Attribute '{column}' already exists. Cannot override this "
+                    f"attribute with the from_dataframe method. Please rename the "
+                    f"attribute in the dataframe. If you really meant to override "
+                    f"this attribute, please do so manually after the object is "
+                    f"created."
+                )
             if pd.api.types.is_numeric_dtype(df[column]):
                 # Directly convert numeric columns to numpy arrays
                 np_arr = df[column].to_numpy()
@@ -153,15 +200,18 @@ class ArrayDict(object):
                     # If all elements in the column are ndarrays with the same shape,
                     # stack them
                     np_arr = np.stack(df[column].values)
-                    if np.issubdtype(np_arr.dtype, np.unsignedinteger) and unsigned_to_long:
+                    if (
+                        np.issubdtype(np_arr.dtype, np.unsignedinteger)
+                        and unsigned_to_long
+                    ):
                         np_arr = np_arr.astype(np.int64)
                     data[column] = np_arr
                 else:
                     logging.warning(
                         f"The ndarrays in column '{column}' do not all have the same shape."
                     )
-            elif allow_string_ndarray and isinstance(df[column].iloc[0], str):
-                try: # try to see if unicode strings can be converted to fixed length ASCII bytes
+            elif isinstance(df[column].iloc[0], str):
+                try:  # try to see if unicode strings can be converted to fixed length ASCII bytes
                     df[column].to_numpy(dtype="S")
                 except UnicodeEncodeError:
                     logging.warning(
@@ -196,24 +246,31 @@ class ArrayDict(object):
             with h5py.File("data.h5", "w") as f:
                 data.to_hdf5(f)
         """
-        unicode_type_keys = []
+        # save class name
+        file.attrs["object"] = self.__class__.__name__
+
+        # save attributes
+        _unicode_keys = []
         for key in self.keys:
             value = getattr(self, key)
 
-            if value.dtype.kind == "U": # if its a unicode string type
+            if value.dtype.kind == "U":  # if its a unicode string type
                 try:
                     # convert string arrays to fixed length ASCII bytes
                     value = value.astype("S")
                 except UnicodeEncodeError:
                     raise NotImplementedError(
-                        f"Unable to convert column '{key}' from numpy 'U' string type to fixed-length ASCII (np.dtype('S')). HDF5 does not support numpy 'U' strings."
+                        f"Unable to convert column '{key}' from numpy 'U' string type "
+                        "to fixed-length ASCII (np.dtype('S')). HDF5 does not support "
+                        "numpy 'U' strings."
                     )
-                unicode_type_keys.append(key) # keep track of the keys of the arrays that were originally unicode
+                # keep track of the keys of the arrays that were originally unicode
+                _unicode_keys.append(key)
             file.create_dataset(key, data=value)
 
-
-        file.attrs["unicode_type_keys"] = np.array(unicode_type_keys, dtype="S")
-        file.attrs["object"] = self.__class__.__name__
+        # save a list of the keys of the arrays that were originally unicode to
+        # convert them back to unicode when loading
+        file.attrs["_unicode_keys"] = np.array(_unicode_keys, dtype="S")
 
     @classmethod
     def from_hdf5(cls, file):
@@ -230,14 +287,166 @@ class ArrayDict(object):
             with h5py.File("data.h5", "r") as f:
                 data = ArrayDict.from_hdf5(f)
         """
-        assert file.attrs["object"] == cls.__name__, "object type mismatch"
+        if file.attrs["object"] != cls.__name__:
+            raise ValueError(
+                f"File contains data for a {file.attrs['object']} object, expected "
+                f"{cls.__name__} object."
+            )
+
+        _unicode_keys = file.attrs["_unicode_keys"].astype(str).tolist()
+
         data = {}
-        unicode_type_keys = file.attrs["unicode_type_keys"].astype(str).tolist()
         for key, value in file.items():
             data[key] = value[:]
-            if key in unicode_type_keys: # if the values were originally unicode but stored as fixed length ASCII bytes
-                data[key] = data[key].astype("U") # convert back to unicode
+            # if the values were originally unicode but stored as fixed length ASCII bytes
+            if key in _unicode_keys:
+                data[key] = data[key].astype("U")
         obj = cls(**data)
+
+        return obj
+
+
+class LazyArrayDict(ArrayDict):
+    r"""Lazy variant of :obj:`ArrayDict`. The data is not loaded until it is accessed.
+    This class is meant to be used when the data is too large to fit in memory, and
+    is intended to be intantiated via. :obj:`LazyArrayDict.from_hdf5`.
+    """
+
+    # to access an attribute without triggering the lazy loading use self.__dict__[key]
+    # otherwise using self.key or getattr(self, key) will trigger the lazy loading
+    # and will automatically convert the h5py dataset to a numpy array as well as apply
+    # any outstanding masks.
+
+    _lazy_ops = dict()
+    _unicode_keys = []
+
+    def _maybe_first_dim(self):
+        if len(self.keys) == 0:
+            return None
+        else:
+            for key in self.keys:
+                value = self.__dict__[key]
+                # check if an array is already loaded, return its first dimension
+                if isinstance(value, np.ndarray):
+                    return value.shape[0]
+
+            # no array was loaded, check if there is a mask in _lazy_ops
+            if "mask" in self._lazy_ops:
+                return self._lazy_ops["mask"].sum()
+
+            # otherwise nothing was loaded, return the first dim of the h5py dataset
+            return self.__dict__[self.keys[0]].shape[0]
+
+    def load(self):
+        r"""Loads all the data from the HDF5 file into memory."""
+        # simply access all attributes to trigger the lazy loading
+        for key in self.keys:
+            getattr(self, key)
+
+    def __getattribute__(self, name):
+        if not name in ["__dict__", "keys"]:
+            # intercept attribute calls. this is where data that is not loaded is loaded
+            # and when any lazy operations are applied
+            if name in self.keys:
+                out = self.__dict__[name]
+
+                if isinstance(out, h5py.Dataset):
+                    # apply any mask, and return the numpy array
+                    if "mask" in self._lazy_ops:
+                        out = out[self._lazy_ops["mask"]]
+                    else:
+                        out = out[:]
+
+                    # if the array was originally unicode, convert it back to unicode
+                    if name in self._unicode_keys:
+                        out = out.astype("U")
+
+                    # store it, now the array is loaded
+                    self.__dict__[name] = out
+
+                # if all attributes are loaded, we can remove the lazy flag
+                all_loaded = all(
+                    isinstance(self.__dict__[key], np.ndarray) for key in self.keys
+                )
+                if all_loaded:
+                    self.__class__ = ArrayDict
+                    # delete special private attributes
+                    del self._lazy_ops, self._unicode_keys
+                return out
+
+        return super(LazyArrayDict, self).__getattribute__(name)
+
+    def select_by_mask(self, mask: np.ndarray):
+        assert mask.ndim == 1, f"mask must be 1D, got {mask.ndim}D mask"
+        assert mask.dtype == bool, f"mask must be boolean, got {mask.dtype}"
+
+        first_dim = self._maybe_first_dim()
+        if mask.shape[0] != first_dim:
+            raise ValueError(
+                f"mask length {mask.shape[0]} does not match first dimension of arrays "
+                f"({first_dim})."
+            )
+
+        # make a copy
+        out = self.__class__.__new__(self.__class__)
+        # private attributes
+        out._unicode_keys = self._unicode_keys
+        out._lazy_ops = {}
+
+        # array attributes
+        for key in self.keys:
+            value = self.__dict__[key]
+            if isinstance(value, h5py.Dataset):
+                # the mask will be applied when the getattr is called for this key
+                # the details of the mask operation are stored in _lazy_ops
+                out.__dict__[key] = value
+            else:
+                # this is a numpy array that is already loaded in memory, apply the mask
+                out.__dict__[key] = value[mask].copy()
+
+        # store the mask operation in _lazy_ops for differed execution
+        if "mask" not in self._lazy_ops:
+            out._lazy_ops["mask"] = mask
+        else:
+            # if a mask was already applied, we need to combine the masks
+            out._lazy_ops["mask"] = self._lazy_ops["mask"].copy()
+            out._lazy_ops["mask"][out._lazy_ops["mask"]] = mask
+
+        return out
+
+    @classmethod
+    def from_dataframe(cls, df, unsigned_to_long=True):
+        raise NotImplementedError("Cannot convert a dataframe to a lazy array dict.")
+
+    def to_hdf5(self, file):
+        raise NotImplementedError("Cannot save a lazy array dict to hdf5.")
+
+    @classmethod
+    def from_hdf5(cls, file):
+        r"""Loads the data object from an HDF5 file.
+
+        Args:
+            file (h5py.File): HDF5 file.
+
+        .. code-block:: python
+
+            import h5py
+            from kirby.data import ArrayDict
+
+            with h5py.File("data.h5", "r") as f:
+                data = ArrayDict.from_hdf5(f)
+        """
+        assert file.attrs["object"] == ArrayDict.__name__, (
+            f"File contains data for a {file.attrs['object']} object, expected "
+            f"{ArrayDict.__name__} object."
+        )
+
+        obj = cls.__new__(cls)
+        for key, value in file.items():
+            obj.__dict__[key] = value
+
+        obj._unicode_keys = file.attrs["_unicode_keys"].astype(str).tolist()
+        obj._lazy_ops = {}
 
         return obj
 
@@ -245,24 +454,29 @@ class ArrayDict(object):
 class IrregularTimeSeries(ArrayDict):
     r"""An irregular time series is defined by a set of timestamps and a set of
     attributes that must share the same first dimension as the timestamps.
-    The timestamps are not necessarily regularly sampled.
+    This data object is ideal for event-based data as well as irregularly sampled time
+    series.
 
     Args:
         timestamps: an array of timestamps of shape (N,).
         timekeys: a list of strings that specify which attributes are time-based
-            attributes.
-        **kwargs: Arbitrary keyword arguments where the values are arbitrary
-            multi-dimensional (2d, 3d, ..., nd) arrays with shape (N, *).
+            attributes, this ensures that these attributes are updated appropriately
+            when slicing.
+        domain: an :obj:`Interval` object that defines the domain over which the
+            timeseries is defined. If set to :obj:`"auto"`, the domain will be
+            automatically the interval defined by the minimum and maximum timestamps.
+        **kwargs: arrays that shares the same first dimension.
 
     .. code-block:: python
 
         import numpy as np
         from kirby.data import IrregularTimeSeries
 
-        spikes = IrregularTimeseries(
+        spikes = IrregularTimeSeries(
             unit_index=np.array([0, 0, 1, 0, 1, 2]),
             timestamps=np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6]),
             waveforms=np.zeros((6, 48)),
+            domain="auto",
         )
 
         spikes
@@ -275,7 +489,7 @@ class IrregularTimeSeries(ArrayDict):
         spikes.keys
         >>> ['unit_index', 'timestamps', 'waveforms']
 
-        spikes.sorted
+        spikes.is_sorted()
         >>> True
 
         spikes.slice(0.2, 0.5)
@@ -285,23 +499,22 @@ class IrregularTimeSeries(ArrayDict):
             waveforms=[3, 48]
         )
     """
-    _lazy = False
+
     _sorted = None
+    _timekeys = None
+    _domain = None
 
     def __init__(
         self,
-        timestamps: Union[np.ndarray, h5py.Dataset],
+        timestamps: np.ndarray,
         *,
         timekeys: List[str] = ["timestamps"],
-        **kwargs: Dict[str, Union[np.ndarray, h5py.Dataset]],
+        domain: Union[Interval, str],
+        **kwargs: Dict[str, np.ndarray],
     ):
-        super().__init__()
+        super().__init__(timestamps=timestamps, **kwargs)
 
-        self.timestamps = timestamps
-
-        for key, value in kwargs.items():
-            setattr(self, key, value)
-
+        # timekeys
         if "timestamps" not in timekeys:
             timekeys.append("timestamps")
 
@@ -310,165 +523,194 @@ class IrregularTimeSeries(ArrayDict):
 
         self._timekeys = timekeys
 
+        # domain
+        if domain == "auto":
+            domain = Interval(
+                start=self._maybe_start(),
+                end=self._maybe_end(),
+            )
+        else:
+            if not isinstance(domain, Interval):
+                raise ValueError(
+                    f"domain must be an Interval object or 'auto', got {type(domain)}."
+                )
+
+            if not domain.is_disjoint():
+                raise ValueError("The domain intervals must not be overlapping.")
+
+            if not domain.is_sorted():
+                domain.sort()
+
+        self._domain = domain
+
+
+    # todo add setter for domain
+    @property
+    def domain(self):
+        r"""The time domain over which the time series is defined. Usually a single
+        interval, but could also be a set of intervals."""
+        return self._domain
+    
+    @domain.setter
+    def domain(self, value: Interval):
+        if not isinstance(value, Interval):
+            raise ValueError(f"domain must be an Interval object, got {type(value)}.")
+        self._domain = value
+
     def __setattr__(self, name, value):
         super(IrregularTimeSeries, self).__setattr__(name, value)
+
         if name == "timestamps":
+            assert value.ndim == 1, "timestamps must be 1D."
+            assert ~np.any(np.isnan(value)), f"timestamps cannot contain NaNs."
             # timestamps has been updated, we no longer know whether it is sorted or not
             self._sorted = None
-            self._start = None
-            self._end = None
 
-    @property
-    def sorted(self):
+    def is_sorted(self):
         r"""Returns :obj:`True` if the timestamps are sorted."""
         # check if we already know that the sequence is sorted
         # if lazy loading, we'll have to skip this check
-        if self._sorted is None and not self._lazy:
+        if self._sorted is None:
             self._sorted = np.all(self.timestamps[1:] >= self.timestamps[:-1])
         return self._sorted
 
-    def __len__(self) -> int:
-        r"""Returns the number of time points."""
-        return self.timestamps.shape[0]
-
-    @property
-    def start(self) -> float:
+    def _maybe_start(self) -> float:
         r"""Returns the start time of the time series. If the time series is not sorted,
         the start time is the minimum timestamp."""
-        if self._lazy and self._start is None:
-            raise ValueError("Cannot compute start time of lazy time series.")
+        if self.is_sorted():
+            return self.timestamps[0]
+        else:
+            return np.min(self.timestamps)
 
-        if self._start is None:
-            if self.sorted:
-                self._start = self.timestamps[0]
-            else:
-                self._start = np.min(self.timestamps)
-
-        return self._start
-
-    @property
-    def end(self) -> float:
+    def _maybe_end(self) -> float:
         r"""Returns the end time of the time series. If the time series is not sorted,
         the end time is the maximum timestamp."""
-        if self._lazy and self._end is None:
-            raise ValueError("Cannot compute end time of lazy time series.")
-
-        if self._end is None:
-            if self.sorted:
-                self._end = self.timestamps[-1]
-            else:
-                self._end = np.max(self.timestamps)
-
-        return self._end
+        if self.is_sorted():
+            return self.timestamps[-1]
+        else:
+            return np.max(self.timestamps)
 
     def sort(self):
-        r"""Sorts the timestamps, and reorders the other attributes accordingly. 
-        This method is done in place."""
-        if self._lazy:
-            raise ValueError("Cannot sort lazy time series.")
-
-        if not self.sorted:
+        r"""Sorts the timestamps, and reorders the other attributes accordingly.
+        This method is applied in place."""
+        if not self.is_sorted():
             sorted_indices = np.argsort(self.timestamps)
             for key in self.keys:
                 self.__dict__[key] = self.__dict__[key][sorted_indices]
         self._sorted = True
 
-    def slice(self, start: float, end: float, request_keys: Optional[List[str]] = None):
+    def slice(self, start: float, end: float):
         r"""Returns a new :obj:`IrregularTimeSeries` object that contains the data
-        between the start and end times.
+        between the start and end times. The end time is exclusive, the slice will
+        only include data in :math:`[\textrm{start}, \textrm{end})`.
+
+        All time attributes are updated to be relative to the new start time.
+        The domain is also updated accordingly.
+
+        .. warning::
+            If the time series is not sorted, it will be automatically sorted in place.
 
         Args:
             start: Start time.
             end: End time.
-            request_keys: List of keys to include in the returned object. If
-                :obj:`None`, all keys will be included.
         """
-        if request_keys is None:
-            request_keys = self.keys
+        if not self.is_sorted():
+            logging.warning("time series is not sorted, sorting before slicing")
+            self.sort()
 
-        request_keys = request_keys + ["timestamps"]
+        idx_l = np.searchsorted(self.timestamps, start)
+        idx_r = np.searchsorted(self.timestamps, end)
 
-        assert "timestamps" in request_keys
+        out = self.__class__.__new__(self.__class__)
 
-        if not self._lazy:
-            # the data is in memory
-            if not self.sorted:
-                self.sort()
+        # private attributes
+        out._timekeys = self._timekeys
+        out._sorted = True  # we know the sequence is sorted
+        out._domain = self._domain & Interval(start=start, end=end)
 
-            idx_l = np.searchsorted(self.timestamps, start)
-            idx_r = np.searchsorted(self.timestamps, end, side="right")
+        # array attributes
+        for key in self.keys:
+            out.__dict__[key] = self.__dict__[key][idx_l:idx_r].copy()
 
-            out = self.__class__.__new__(self.__class__)
-            out._timekeys = self._timekeys
+        for key in self._timekeys:
+            out.__dict__[key] = out.__dict__[key] - start
+        return out
+    
+    def select_by_mask(self, mask: np.ndarray):
+        r"""Return a new :obj:`IrregularTimeSeries` object where all array attributes 
+        are indexed using the boolean mask.
 
-            for key in self.keys:
-                if key in request_keys or key in [
-                    "train_mask",
-                    "val_mask",
-                    "test_mask",
-                ]:
-                    out.__dict__[key] = self.__dict__[key][idx_l:idx_r].copy()
-
-            for key in self._timekeys:
-                if key in request_keys:
-                    out.__dict__[key] = out.__dict__[key] - start
-            return out
-        else:
-            # lazy loading, we will use the precomputed grid to extract the chunk of
-            # data that we need
-            start_closest_sec_idx = np.clip(
-                np.floor(start - self.start).astype(int),
-                0,
-                len(self._timestamp_indices_1s) - 1,
-            )
-            end_closest_sec_idx = np.clip(
-                np.ceil(end - self.start).astype(int),
-                0,
-                len(self._timestamp_indices_1s) - 1,
-            )
-
-            idx_l = self._timestamp_indices_1s[start_closest_sec_idx]
-            idx_r = self._timestamp_indices_1s[end_closest_sec_idx]
-
-            out = self.__class__.__new__(self.__class__)
-            out._timekeys = self._timekeys
-            out._sorted = True
-            for key in self.keys:
-                if key in request_keys or key in [
-                    "train_mask",
-                    "val_mask",
-                    "test_mask",
-                ]:
-                    out.__dict__[key] = self.__dict__[key][idx_l:idx_r]
-
-            # the slice we get is only precise to the 1sec, so we re-slice
-            return out.slice(start, end)
+        Note that this will not update the domain, as it is unclear how to resolve the
+        domain when the mask is applied. If you wish to update the domain, you should
+        do so manually.
+        """
+        out = super().select_by_mask(mask, timekeys=self._timekeys, domain=self.domain)
+        out._sorted = self._sorted
+        return out
 
     def add_split_mask(self, name: str, interval: Interval):
-        """Create a boolean mask array with True for all timestamps that are within the
-        intervals.
+        """Adds a boolean mask as an array attribute, which is defined for each
+        timestamp, and is set to :obj:`True` for all timestamps that are within
+        :obj:`interval`. The mask attribute will be called :obj:`<name>_mask`.
+
+        This is used to mark points in the time series, as part of train, validation,
+        or test sets, and is useful to ensure that there is no data leakage.
 
         Args:
-            name: name of the mask. The mask attribute will be called <name>_mask
-            interval: :obj:`Interval` object. We will consider all timestamps that are 
-                within the intervals [start, end) as having a True mask.
+            name: name of the split, e.g. "train", "valid", "test".
+            interval: a set of intervals defining the split domain.
         """
         assert not hasattr(self, f"{name}_mask"), (
             f"Attribute {name}_mask already exists. Use another mask name, or rename "
             f"the existing attribute."
         )
 
-        mask_array = np.zeros_like(self.timestamps, dtype=bool)
+        mask_array = np.zeros(len(self), dtype=bool)
         for start, end in zip(interval.start, interval.end):
             mask_array |= (self.timestamps >= start) & (self.timestamps < end)
 
         setattr(self, f"{name}_mask", mask_array)
+
+    @classmethod
+    def from_dataframe(
+        cls,
+        df: pd.DataFrame,
+        domain: Union[str, Interval] = "auto",
+        unsigned_to_long: bool = True,
+    ):
+        r"""Create an :obj:`IrregularTimeseries` object from a pandas DataFrame.
+        The dataframe must have a timestamps column, with the name :obj:`"timestamps"`
+        (use `pd.Dataframe.rename` if needed).
+
+        The columns in the DataFrame are converted to arrays when possible, otherwise
+        they will be skipped.
+
+        Args:
+            df: DataFrame.
+            unsigned_to_long: Whether to automatically convert unsigned
+              integers to int64 dtype. Defaults to :obj:`True`.
+            domain (optional): The domain over which the time
+                series is defined. If set to :obj:`"auto"`, the domain will be 
+                automatically the interval defined by the minimum and maximum 
+                timestamps. Defaults to :obj:`"auto"`.
+        """
+        if "timestamps" not in df.columns:
+            raise ValueError("Column 'timestamps' not found in dataframe.")
+
+        return super().from_dataframe(
+            df,
+            unsigned_to_long=unsigned_to_long,
+            domain=domain,
+        )
 
     def to_hdf5(self, file):
         r"""Saves the data object to an HDF5 file.
 
         Args:
             file (h5py.File): HDF5 file.
+
+        .. warning::
+            If the time series is not sorted, it will be automatically sorted in place.
 
         .. code-block:: python
 
@@ -479,34 +721,52 @@ class IrregularTimeSeries(ArrayDict):
                 unit_index=np.array([0, 0, 1, 0, 1, 2]),
                 timestamps=np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6]),
                 waveforms=np.zeros((6, 48)),
+                domain="auto",
             )
 
             with h5py.File("data.h5", "w") as f:
                 data.to_hdf5(f)
         """
-        if not self.sorted:
+        if not self.is_sorted():
             logging.warning("time series is not sorted, sorting before saving to h5")
             self.sort()
 
+        _unicode_keys = []
         for key in self.keys:
             value = getattr(self, key)
+
+            if value.dtype.kind == "U":  # if its a unicode string type
+                try:
+                    # convert string arrays to fixed length ASCII bytes
+                    value = value.astype("S")
+                except UnicodeEncodeError:
+                    raise NotImplementedError(
+                        f"Unable to convert column '{key}' from numpy 'U' string type "
+                        "to fixed-length ASCII (np.dtype('S')). HDF5 does not support "
+                        "numpy 'U' strings."
+                    )
+                # keep track of the keys of the arrays that were originally unicode
+                _unicode_keys.append(key)
             file.create_dataset(key, data=value)
 
-        # make sure to save the start and end times
-        file.attrs["start"] = self.start
-        file.attrs["end"] = self.end
-
-        file.attrs["timekeys"] = np.array(self._timekeys, dtype="S")
-
-        # timestamps is special
+        # in case we want to do lazy loading, we need to store some map to the
+        # irregularly sampled timestamps
+        # we use a 1 second resolution
         grid_timestamps = np.arange(
-            self.start, self.end + 1.0, 1.0
-        )  # 1 second resolution
+            self.domain.start[0], self.domain.end[-1] + 1.0, 1.0
+        )
         file.create_dataset(
             "timestamp_indices_1s",
             data=np.searchsorted(self.timestamps, grid_timestamps),
         )
 
+        # domain is of type Interval
+        grp = file.create_group("domain")
+        self.domain.to_hdf5(grp)
+
+        # save other private attributes
+        file.attrs["_unicode_keys"] = np.array(_unicode_keys, dtype="S")
+        file.attrs["timekeys"] = np.array(self._timekeys, dtype="S")
         file.attrs["object"] = self.__class__.__name__
 
     @classmethod
@@ -524,22 +784,303 @@ class IrregularTimeSeries(ArrayDict):
             with h5py.File("data.h5", "r") as f:
                 data = IrregularTimeSeries.from_hdf5(f)
         """
-        assert file.attrs["object"] == cls.__name__, "object type mismatch"
+        if file.attrs["object"] != cls.__name__:
+            raise ValueError(
+                f"File contains data for a {file.attrs['object']} object, expected "
+                f"{cls.__name__} object."
+            )
+
+        _unicode_keys = file.attrs["_unicode_keys"].astype(str).tolist()
+
         data = {}
         for key, value in file.items():
-            if key == "timestamp_indices_1s":
-                data["_timestamp_indices_1s"] = value[:]
-            else:
-                data[key] = value
+            # skip timestamp_indidces_1s since we're not lazy loading here
+            if key not in ["timestamp_indices_1s", "domain"]:
+                data[key] = value[:]
+                # if the values were originally unicode but stored as fixed length ASCII bytes
+                if key in _unicode_keys:
+                    data[key] = data[key].astype("U")
 
-        obj = cls(**data)
-        obj._lazy = True
+        timekeys = file.attrs["timekeys"].astype(str).tolist()
+        domain = Interval.from_hdf5(file["domain"])
 
-        # recover start and end times
-        obj._start = file.attrs["start"]
-        obj._end = file.attrs["end"]
+        obj = cls(**data, timekeys=timekeys, domain=domain)
+        # only sorted data could be saved to hdf5, so we know it's sorted
         obj._sorted = True
+
+        return obj
+
+
+class LazyIrregularTimeSeries(IrregularTimeSeries):
+    _lazy_ops = dict()
+    _unicode_keys = []
+
+    def _maybe_first_dim(self):
+        if len(self.keys) == 0:
+            return None
+        else:
+            # if slice is waiting to be resolved, we need to resolve it now to get the
+            # first dimension
+            if "unresolved_slice" in self._lazy_ops:
+                return self.timestamps.shape[0]
+
+            # if slicing already took place, than some attribute would have already
+            # been loaded. look for any numpy array
+            for key in self.keys:
+                value = self.__dict__[key]
+                if isinstance(value, np.ndarray):
+                    return value.shape[0]
+
+            # no array was loaded, check if some lazy masking is planned
+            if "mask" in self._lazy_ops:
+                return self._lazy_ops["mask"].sum()
+
+            # otherwise nothing was loaded, return the first dim of the h5py dataset
+            return self.__dict__[self.keys[0]].shape[0]
+
+    def load(self):
+        r"""Loads all the data from the HDF5 file into memory."""
+        # simply access all attributes to trigger the lazy loading
+        for key in self.keys:
+            getattr(self, key)
+
+    def __getattribute__(self, name):
+        if not name in ["__dict__", "keys"]:
+            # intercept attribute calls
+            if name in self.keys:
+                # out could either be a numpy array or a reference to a h5py dataset
+                # if is not loaded, now is the time to load it and apply any outstanding
+                # slicing or masking.
+                out = self.__dict__[name]
+
+                if isinstance(out, h5py.Dataset):
+                    # convert into numpy array
+
+                    # first we check if timestamps was resolved
+                    if "unresolved_slice" in self._lazy_ops:
+                        # slice and unresolved_slice cannot both be queued 
+                        assert "slice" not in self._lazy_ops
+                        # slicing never happened, and we need to resolve timestamps 
+                        # to identify the time points that we need
+                        self._resolve_timestamps_after_slice()
+                        # after this "unresolved_slice" is replaced with "slice"
+
+                    # timestamps are resolved and there is a "slice"
+                    if "slice" in self._lazy_ops:
+                        idx_l, idx_r, start = self._lazy_ops["slice"]
+                        out = out[idx_l:idx_r]
+                        if name in self._timekeys:
+                            out = out - start
+                    
+                    # there could have been masking, so apply it
+                    if "mask" in self._lazy_ops:
+                        out = out[self._lazy_ops["mask"]]
+
+                    # no lazy operations found, just load the entire array
+                    if len(self._lazy_ops) == 0:
+                        out = out[:]
+
+                    if name in self._unicode_keys:
+                        # convert back to unicode
+                        out = out.astype("U")
+
+                    # store it in memory now that it is loaded
+                    self.__dict__[name] = out
+
+                # if all attributes are loaded, we can remove the lazy flag
+                all_loaded = all(
+                    isinstance(self.__dict__[key], np.ndarray) for key in self.keys
+                )
+                if all_loaded:
+                    # simply change classes
+                    self.__class__ = IrregularTimeSeries
+                    # delete unnecessary attributes
+                    del self._lazy_ops, self._unicode_keys
+                    if hasattr(self, "_timestamp_indices_1s"):
+                        del self._timestamp_indices_1s
+
+                return out
+        return super(LazyIrregularTimeSeries, self).__getattribute__(name)
+
+    def select_by_mask(self, mask: np.ndarray):
+        assert mask.ndim == 1, f"mask must be 1D, got {mask.ndim}D mask"
+        assert mask.dtype == bool, f"mask must be boolean, got {mask.dtype}"
+
+        first_dim = self._maybe_first_dim()
+        if mask.shape[0] != first_dim:
+            raise ValueError(
+                f"mask length {mask.shape[0]} does not match first dimension of arrays "
+                f"({first_dim})."
+            )
+
+        # make a copy
+        out = self.__class__.__new__(self.__class__)
+        out._unicode_keys = self._unicode_keys
+        out._timekeys = self._timekeys
+        out._domain = self._domain
+        out._lazy_ops = {}
+
+        for key in self.keys:
+            value = self.__dict__[key]
+            if isinstance(value, h5py.Dataset):
+                out.__dict__[key] = value
+            else:
+                out.__dict__[key] = value[mask].copy()
+
+        # store the mask operation in _lazy_ops for differed execution of attributes
+        # that are not yet loaded
+        if "mask" not in self._lazy_ops:
+            out._lazy_ops["mask"] = mask
+        else:
+            # if a mask already exists, it is easy to combine the masks
+            out._lazy_ops["mask"] = self._lazy_ops["mask"].copy()
+            out._lazy_ops["mask"][out._lazy_ops["mask"]] = mask
+
+        if "slice" in self._lazy_ops:
+            out._lazy_ops["slice"] = self._lazy_ops["slice"]
+
+        return out
+
+    def _resolve_timestamps_after_slice(self):
+        start, end, sequence_start = self._lazy_ops["unresolved_slice"]
+        # sequence_start: Time corresponding to _timstamps_indices_1s[0]
+
+        start_closest_sec_idx = np.clip(
+            np.floor(start - sequence_start).astype(int),
+            0,
+            len(self._timestamp_indices_1s) - 1,
+        )
+        end_closest_sec_idx = np.clip(
+            np.ceil(end - sequence_start).astype(int),
+            0,
+            len(self._timestamp_indices_1s) - 1,
+        )
+
+        idx_l = self._timestamp_indices_1s[start_closest_sec_idx]
+        idx_r = self._timestamp_indices_1s[end_closest_sec_idx]
+
+        timestamps = self.__dict__["timestamps"][idx_l:idx_r]
+
+        idx_dl = np.searchsorted(timestamps, start)
+        idx_dr = np.searchsorted(timestamps, end)
+        timestamps = timestamps[idx_dl:idx_dr]
+
+        idx_r = idx_l + idx_dr
+        idx_l = idx_l + idx_dl
+
+        del self._lazy_ops["unresolved_slice"]
+        self._lazy_ops["slice"] = (idx_l, idx_r, start)
+        self.__dict__["timestamps"] = timestamps - start
+
+    def slice(self, start: float, end: float):
+        out = self.__class__.__new__(self.__class__)
+        out._unicode_keys = self._unicode_keys
+        out._lazy_ops = {}
+        out._timekeys = self._timekeys
+
+        out._domain = self._domain & Interval(start=start, end=end)
+        out._domain.start = self._domain.start - start
+        out._domain.end = self._domain.end - start
+
+        if isinstance(self.__dict__["timestamps"], h5py.Dataset):
+            # lazy loading, we will only resolve timestamps if an attribute is accessed
+            assert "slice" not in self._lazy_ops, "slice already exists"
+            if "unresolved_slice" not in self._lazy_ops:
+                out._lazy_ops["unresolved_slice"] = (start, end, self._domain.start[0])
+            else:
+                # for some reason, blind slicing was done twice, and there is no need to
+                # resolve the timestamps again
+                curr_start, curr_end, sequence_start = self._lazy_ops["unresolved_slice"]
+                out._lazy_ops["unresolved_slice"] = (
+                    curr_start + start,
+                    min(curr_start + end, curr_end),
+                    sequence_start,
+                )
+
+            idx_l = idx_r = None
+            out.__dict__["timestamps"] = self.__dict__["timestamps"]
+            out._timestamp_indices_1s = self._timestamp_indices_1s
+        else:
+            assert (
+                "unresolved_slice" not in self._lazy_ops
+            ), "unresolved slice already exists"
+            assert self.is_sorted(), "time series is not sorted, cannot slice"
+
+            timestamps = self.timestamps
+            idx_l = np.searchsorted(timestamps, start)
+            idx_r = np.searchsorted(timestamps, end)
+
+            timestamps = timestamps[idx_l:idx_r]
+            out.__dict__["timestamps"] = timestamps - start
+
+            if "slice" not in self._lazy_ops:
+                out._lazy_ops["slice"] = (idx_l, idx_r, start)
+            else:
+                out._lazy_ops["slice"] = (
+                    self._lazy_ops["slice"][0] + idx_l,
+                    self._lazy_ops["slice"][0] + idx_r,
+                    self._lazy_ops["slice"][2] - start,
+                )
+
+        for key in self.keys:
+            if key != "timestamps":
+                value = self.__dict__[key]
+                if isinstance(value, h5py.Dataset):
+                    out.__dict__[key] = value
+                else:
+                    if idx_l is None:
+                        raise NotImplementedError(
+                            f"An attribute ({key}) was accessed, but timestamps failed "
+                            "to load. This is an edge case that was not handled."
+                        )
+                    out.__dict__[key] = value[idx_l:idx_r].copy()
+                    if key in self._timekeys:
+                        out.__dict__[key] = out.__dict__[key] - start
+
+        if "mask" in self._lazy_ops:
+            if idx_l is None:
+                raise NotImplementedError(
+                    "A mask was somehow created without accessing any attribute in the "
+                    "data. This has not been taken into account."
+                )
+            out._lazy_ops["mask"] = self._lazy_ops["mask"][idx_l:idx_r]
+        return out
+
+    def to_hdf5(self, file):
+        raise NotImplementedError("Cannot save a lazy array dict to hdf5.")
+
+    @classmethod
+    def from_hdf5(cls, file):
+        r"""Loads the data object from an HDF5 file.
+
+        Args:
+            file (h5py.File): HDF5 file.
+
+        .. code-block:: python
+
+            import h5py
+            from kirby.data import ArrayDict
+
+            with h5py.File("data.h5", "r") as f:
+                data = ArrayDict.from_hdf5(f)
+        """
+        assert (
+            file.attrs["object"] == IrregularTimeSeries.__name__
+        ), "object type mismatch"
+
+        obj = cls.__new__(cls)
+        for key, value in file.items():
+            if key == "domain":
+                obj.__dict__["_domain"] = Interval.from_hdf5(file[key])
+            elif key == "timestamp_indices_1s":
+                obj.__dict__["_timestamp_indices_1s"] = value[:]
+            else:
+                obj.__dict__[key] = value
+
+        obj._unicode_keys = file.attrs["_unicode_keys"].astype(str).tolist()
         obj._timekeys = file.attrs["timekeys"].astype(str).tolist()
+        obj._sorted = True
+        obj._lazy_ops = {}
 
         return obj
 
@@ -558,7 +1099,7 @@ class RegularTimeSeries(ArrayDict):
         **kwargs: Arbitrary keyword arguments where the values are arbitrary
             multi-dimensional (2d, 3d, ..., nd) arrays with shape (N, *).
 
-    
+
     .. code-block:: python
 
         import numpy as np
@@ -581,24 +1122,22 @@ class RegularTimeSeries(ArrayDict):
         )
     """
 
-    _lazy = False
-
     def __init__(
         self,
         *,
         sampling_rate: float,  # in Hz
-        **kwargs: Dict[str, Union[np.ndarray, h5py.Dataset]],
+        domain: Interval = None,
+        **kwargs: Dict[str, np.ndarray],
     ):
-        super().__init__()
+        super().__init__(**kwargs)
 
         self._sampling_rate = sampling_rate
 
-        for key, value in kwargs.items():
-            setattr(self, key, value)
-
-    def __len__(self) -> int:
-        r"""Returns the number of time points."""
-        return self._maybe_first_dim()
+        if domain == "auto":
+            domain = Interval(
+                start=np.array([0.0]), end=np.array([(len(self) - 1) / sampling_rate])
+            )
+        self._domain = domain
 
     @property
     def sampling_rate(self) -> float:
@@ -606,34 +1145,31 @@ class RegularTimeSeries(ArrayDict):
         return self._sampling_rate
 
     @property
-    def start(self) -> float:
-        r"""Returns the start time of the time series."""
-        return 0.0
+    def domain(self) -> Interval:
+        r"""Returns the domain of the time series."""
+        return self._domain
 
-    @property
-    def end(self) -> float:
-        r"""Returns the end time of the time series."""
-        return self.start + len(self) / self.sampling_rate
+    def select_by_mask(self, mask: np.ndarray):
+        raise NotImplementedError("Not implemented for RegularTimeSeries.")
 
-    def slice(self, start: float, end: float, request_keys: Optional[List[str]] = None):
+    def slice(self, start: float, end: float):
         r"""Returns a new :obj:`RegularTimeSeries` object that contains the data between
         the start and end times.
         """
-        if request_keys is None:
-            request_keys = self.keys
 
-        start_id = int(np.floor(start * self.sampling_rate))
-        end_id = int(np.ceil(end * self.sampling_rate))
+        start_id = int(np.floor((start - self.domain.start[0]) * self.sampling_rate))
+        end_id = int(np.floor((end - self.domain.start[0]) * self.sampling_rate))
 
         out = self.__class__.__new__(self.__class__)
         out._sampling_rate = self.sampling_rate
+        out._domain = self._domain  # arithmetics go here
+        out._domain.start, out._domain.end = (
+            out._domain.start - start,
+            out._domain.end - start,
+        )
+
         for key in self.keys:
-            if key in request_keys or key in [
-                "train_mask",
-                "val_mask",
-                "test_mask",
-            ]:
-                out.__dict__[key] = self.__dict__[key][start_id:end_id].copy()
+            out.__dict__[key] = self.__dict__[key][start_id:end_id].copy()
 
         return out
 
@@ -662,17 +1198,20 @@ class RegularTimeSeries(ArrayDict):
 
     def to_irregular(self):
         r"""Converts the time series to an irregular time series."""
-        assert not self._lazy
-
         return IrregularTimeSeries(
             timestamps=self.timestamps,
             **{k: getattr(self, k) for k in self.keys},
+            domain=self.domain,
         )
 
     @property
     def timestamps(self):
         r"""Returns the timestamps of the time series."""
-        return np.arange(self.start, self.end, 1.0 / self.sampling_rate) 
+        return np.arange(
+            self.domain.start[0],
+            self.domain.end[0] + 1.0 / self.sampling_rate,
+            1.0 / self.sampling_rate,
+        )
 
     def to_hdf5(self, file):
         r"""Saves the data object to an HDF5 file.
@@ -681,15 +1220,15 @@ class RegularTimeSeries(ArrayDict):
             file (h5py.File): HDF5 file.
 
         .. code-block:: python
-            
+
                 import h5py
                 from kirby.data import RegularTimeSeries
-    
+
                 data = RegularTimeSeries(
                     raw=np.zeros((1000, 128)),
                     sampling_rate=250.,
                 )
-    
+
                 with h5py.File("data.h5", "w") as f:
                     data.to_hdf5(f)
         """
@@ -697,18 +1236,22 @@ class RegularTimeSeries(ArrayDict):
             value = getattr(self, key)
             file.create_dataset(key, data=value)
 
+        # domain is of type Interval
+        grp = file.create_group("domain")
+        self._domain.to_hdf5(grp)
+
         file.attrs["object"] = self.__class__.__name__
         file.attrs["sampling_rate"] = self.sampling_rate
 
     @classmethod
     def from_hdf5(cls, file):
         r"""Loads the data object from an HDF5 file.
-        
+
         Args:
             file (h5py.File): HDF5 file.
-            
+
         .. code-block:: python
-        
+
             import h5py
             from kirby.data import RegularTimeSeries
 
@@ -719,10 +1262,119 @@ class RegularTimeSeries(ArrayDict):
 
         data = {}
         for key, value in file.items():
-            data[key] = value
+            if key != "domain":
+                data[key] = value[:]
 
-        obj = cls(**data, sampling_rate=file.attrs["sampling_rate"])
-        obj._lazy = True
+        domain = Interval.from_hdf5(file["domain"])
+        obj = cls(**data, sampling_rate=file.attrs["sampling_rate"], domain=domain)
+
+        return obj
+
+
+class LazyRegularTimeSeries(RegularTimeSeries):
+    _lazy_ops = dict()
+
+    def _maybe_first_dim(self):
+        if len(self.keys) == 0:
+            return None
+        else:
+            # todo check _lazy_ops
+            for key in self.keys:
+                value = self.__dict__[key]
+                if isinstance(value, np.ndarray):
+                    return value.shape[0]
+
+            # otherwise nothing was loaded, return the first dim of the h5py dataset
+            return self.__dict__[self.keys[0]].shape[0]
+
+    def __getattribute__(self, name):
+        if not name in ["__dict__", "keys"]:
+            # intercept attribute calls
+            if name in self.keys:
+                out = self.__dict__[name]
+
+                if isinstance(out, h5py.Dataset):
+                    # convert into numpy array
+                    if "slice" in self._lazy_ops:
+                        idx_l, idx_r = self._lazy_ops["slice"]
+                        out = out[idx_l:idx_r]
+                    else:
+                        out = out[:]
+
+                    # store it
+                    self.__dict__[name] = out
+
+                # If all attributes are loaded, we can remove the lazy flag
+                all_loaded = all(
+                    isinstance(self.__dict__[key], np.ndarray) for key in self.keys
+                )
+                if all_loaded:
+                    self.__class__ = RegularTimeSeries
+                    del self._lazy_ops
+
+                return out
+        return super(LazyRegularTimeSeries, self).__getattribute__(name)
+
+    def slice(self, start: float, end: float):
+        r"""Returns a new :obj:`RegularTimeSeries` object that contains the data between
+        the start and end times.
+        """
+
+        start_id = int(np.floor((start - self.domain.start[0]) * self.sampling_rate))
+        end_id = int(np.floor((end - self.domain.start[0]) * self.sampling_rate))
+
+        out = self.__class__.__new__(self.__class__)
+        out._sampling_rate = self.sampling_rate
+        out._lazy_ops = {}
+
+        out._domain = Interval(start=np.array([0.0]), end=np.array([end - start]))
+
+        for key in self.keys:
+            if isinstance(self.__dict__[key], h5py.Dataset):
+                out.__dict__[key] = self.__dict__[key]
+            else:
+                out.__dict__[key] = self.__dict__[key][start_id:end_id].copy()
+
+        if "slice" not in self._lazy_ops:
+            out._lazy_ops["slice"] = (start_id, end_id)
+        else:
+            out._lazy_ops["slice"] = (
+                self._lazy_ops["slice"][0] + start_id,
+                self._lazy_ops["slice"][0] + end_id,
+            )
+
+        return out
+
+    def to_hdf5(self, file):
+        raise NotImplementedError("Cannot save a lazy array dict to hdf5.")
+
+    @classmethod
+    def from_hdf5(cls, file):
+        r"""Loads the data object from an HDF5 file.
+
+        Args:
+            file (h5py.File): HDF5 file.
+
+        .. code-block:: python
+
+            import h5py
+            from kirby.data import ArrayDict
+
+            with h5py.File("data.h5", "r") as f:
+                data = ArrayDict.from_hdf5(f)
+        """
+        assert (
+            file.attrs["object"] == RegularTimeSeries.__name__
+        ), "object type mismatch"
+
+        obj = cls.__new__(cls)
+        for key, value in file.items():
+            if key == "domain":
+                obj.__dict__["_domain"] = Interval.from_hdf5(file[key])
+            else:
+                obj.__dict__[key] = value
+        obj._lazy_ops = {}
+        obj._sampling_rate = file.attrs["sampling_rate"]
 
         return obj
 
@@ -730,17 +1382,16 @@ class RegularTimeSeries(ArrayDict):
 class Interval(ArrayDict):
     r"""An interval object is a set of time intervals each defined by a start time and
     an end time.
-    
+
     Args:
         start: an array of start times of shape (N,).
         end: an array of end times of shape (N,).
         timekeys: a list of strings that specify which attributes are time-based
             attributes.
-        **kwargs: Arbitrary keyword arguments where the values are arbitrary
-            multi-dimensional (2d, 3d, ..., nd) arrays with shape (N, *).
+        **kwargs: arrays that shares the same first dimension.
 
     .. code-block:: python
-    
+
         import numpy as np
         from kirby.data import Interval
 
@@ -748,7 +1399,7 @@ class Interval(ArrayDict):
             start=np.array([0, 1, 2]),
             end=np.array([1, 2, 3]),
             go_cue_time=np.array([0.5, 1.5, 2.5]),
-            drifting_gratins_dir=np.array([0, 45, 90]),
+            drifting_gratings_dir=np.array([0, 45, 90]),
             timekeys=["start", "end", "go_cue_time"],
         )
 
@@ -757,11 +1408,11 @@ class Interval(ArrayDict):
             start=[3],
             end=[3],
             go_cue_time=[3],
-            drifting_gratins_dir=[3]
+            drifting_gratings_dir=[3]
         )
 
         intervals.keys
-        >>> ['start', 'end', 'go_cue_time', 'drifting_gratins_dir']
+        >>> ['start', 'end', 'go_cue_time', 'drifting_gratings_dir']
 
         intervals.sorted
         >>> True
@@ -774,14 +1425,14 @@ class Interval(ArrayDict):
             start=[2],
             end=[2],
             go_cue_time=[2],
-            drifting_gratins_dir=[2]
+            drifting_gratings_dir=[2]
         )
 
     :obj:`Interval` objects can be indexed with a binary mask, which will return a new
     :obj:`Interval` object with the selected elements and their corresponding attributes.
 
     .. code-block:: python
-    
+
             intervals[[True, False, True]]
             >>> Interval(
                 start=[2],
@@ -790,22 +1441,33 @@ class Interval(ArrayDict):
                 drifting_gratins_dir=[2]
             )
     """
+
     _sorted = None
+    _timekeys = None
     _allow_split_mask_overlap = False
-    _lazy = False
 
     def __init__(
-        self, start: np.ndarray, end: np.ndarray, *, timekeys=["start", "end"], **kwargs
+        self,
+        start: Union[float, np.ndarray],
+        end: Union[float, np.ndarray],
+        *,
+        timekeys=["start", "end"],
+        **kwargs,
     ):
-        self.start = start
-        self.end = end
+        # we allow for scalar start and end, since it is common to have a single
+        # interval especially when defining a domain
+        if isinstance(start, (int, float)):
+            start = np.array([start], dtype=np.float64)
+        
+        if isinstance(end, (int, float)):
+            end = np.array([end], dtype=np.float64)
 
-        for key, value in kwargs.items():
-            setattr(self, key, value)
+        super().__init__(start=start, end=end, **kwargs)
 
-        if "start" not in self.keys:
+        # time keys
+        if "start" not in timekeys:
             timekeys.append("start")
-        if "end" not in self.keys:
+        if "end" not in timekeys:
             timekeys.append("end")
         for key in timekeys:
             assert key in self.keys, f"Time attribute {key} not found in data."
@@ -814,31 +1476,28 @@ class Interval(ArrayDict):
 
     def __setattr__(self, name, value):
         super(Interval, self).__setattr__(name, value)
+
         if name == "start" or name == "end":
+            assert value.ndim == 1, f"{name} must be 1D."
+            assert ~np.any(np.isnan(value)), f"{name} cannot contain NaNs."
             # start or end have been updated, we no longer know whether it is sorted
             # or not
             self._sorted = None
 
-    @property
-    def disjoint(self):
+    def is_disjoint(self):
         r"""Returns :obj:`True` if the intervals are disjoint, i.e. if no two intervals
         overlap."""
         # check if we already know that the sequence is sorted
         # if lazy loading, we'll have to skip this check
-        if self._lazy:
-            raise ValueError(
-                "Cannot check if intervals are disjoint for lazy time series."
-            )
-        if not self.sorted:
-            return copy.deepcopy(self).sort().disjoint
+        if not self.is_sorted():
+            return copy.deepcopy(self).sort().is_disjoint()
         return np.all(self.end[:-1] <= self.start[1:])
 
-    @property
-    def sorted(self):
+    def is_sorted(self):
         r"""Returns :obj:`True` if the intervals are sorted."""
         # check if we already know that the sequence is sorted
         # if lazy loading, we'll have to skip this check
-        if self._sorted is None and not self._lazy:
+        if self._sorted is None:
             self._sorted = np.all(self.start[1:] >= self.start[:-1]) and np.all(
                 self.end[1:] >= self.end[:-1]
             )
@@ -846,123 +1505,146 @@ class Interval(ArrayDict):
 
     def sort(self):
         r"""Sorts the intervals, and reorders the other attributes accordingly.
-        This method is done in place. 
+        This method is done in place.
 
         .. note:: This method only works if the intervals are disjoint. If the intervals
-        overlap, it is not possible to resolve the order of the intervals, and this 
-        method will raise an error.
+            overlap, it is not possible to resolve the order of the intervals, and this
+            method will raise an error.
         """
-        if self._lazy:
-            raise ValueError("Cannot sort lazy time series.")
-        if not self.sorted:
+        if not self.is_sorted():
             sorted_indices = np.argsort(self.start)
             for key in self.keys:
                 self.__dict__[key] = self.__dict__[key][sorted_indices]
         self._sorted = True
 
-        assert self.disjoint, "Intervals must be disjoint after sorting."
+        if not self.is_disjoint():
+            raise ValueError("Intervals must be disjoint.")
 
-    def __len__(self) -> int:
-        return self.start.shape[0]
+    def slice(self, start: float, end: float):
+        r"""Returns a new :obj:`Interval` object that contains the data between the
+        start and end times. An interval is included if it has any overlap with the
+        slicing window. The end time is exclusive.
 
-    def __getitem__(self, item: Union[str, int, slice, list, np.ndarray]):
-        r"""Allows indexing of the :obj:`Interval` object.
+        All time attributes are updated to be relative to the new start time.
 
-        It can be indexed with:
-            - a string, which will return the corresponding attribute.
-            - an integer, which will return a new :obj:`Interval` object with a single
-            element and its corresponding attributes.
-            - a slice, which will return a new :obj:`Interval` object with the selected
-            elements and their corresponding attributes.
-            - a list of integers, which will return a new :obj:`Interval` object with
-            the selected elements and their corresponding attributes.
-            - a binary mask, which will return a new :obj:`Interval` object with the
-            selected elements and their corresponding attributes.
+        .. warning::
+            If the intervals are not sorted, they will be automatically sorted in place.
 
-        Example:
-            >> import numpy as np
-            >> from kirby.data import Interval
-            >> interval = Interval(np.array([0, 1, 2]), np.array([1, 2, 3]))
-            >> interval[0]
-            Interval(start=np.array([0]), end=np.array([1]))
-            >> interval[0:2]
-            Interval(start=np.array([0, 1]), end=np.array([1, 2]))
-            >> interval[[0, 2]]
-            Interval(start=np.array([0, 2]), end=np.array([1, 3]))
-            >> interval[[True, False, True]]
-            Interval(start=np.array([0, 2]), end=np.array([1, 3]))
-        """
-        if isinstance(item, str):
-            # return the corresponding attribute
-            return getattr(self, item)
-        else:
-            out = self.__class__.__new__(self.__class__)
-            for key, value in self.__dict__.items():
-                if key == "_sorted":
-                    out.__dict__[
-                        "_sorted"
-                    ] = None  # We don't know if these intervals are sorted
-                elif key == "_timekeys":
-                    out.__dict__["_timekeys"] = value
-                else:
-                    out.__dict__[key] = value[item]
-
-            return out
-
-    def slice(self, start: float, end: float, request_keys: Optional[List[str]] = None):
-        r"""Returns a new :obj:`Interval` object that contains the data between the 
-        start and end times. An interval is included if it has any overlap with the 
-        slicing window.
-        
         Args:
             start: Start time.
             end: End time.
-            request_keys: List of keys to include in the returned object. If
-                :obj:`None`, all keys will be included.
         """
-        if request_keys is None:
-            request_keys = self.keys
-        
-        request_keys = request_keys + ["start", "end"]
 
-        if self._lazy:
-            # load the request keys only and return a new object
-            out = self.__class__.__new__(self.__class__)
-            out._timekeys = self._timekeys
-
-            for key in self.keys:
-                if key in request_keys or key in [
-                    "train_mask",
-                    "val_mask",
-                    "test_mask",
-                ]:
-                    out.__dict__[key] = self.__dict__[key][:]  # load into memory
-
-            return out.slice(start, end, request_keys=request_keys)
-
-        assert "start" in request_keys and "end" in request_keys
-
-        if not self.sorted:
+        if not self.is_sorted():
             self.sort()
 
-        idx_l = np.searchsorted(
-            self.end, start
-        )  # anything that starts before the end of the slicing window
-        idx_r = np.searchsorted(
-            self.start, end, side="right"
-        )  # anything that will end after the start of the slicing window
+        # anything that starts before the end of the slicing window
+        idx_l = np.searchsorted(self.end, start, side="right")
+
+        # anything that will end after the start of the slicing window
+        idx_r = np.searchsorted(self.start, end)
 
         out = self.__class__.__new__(self.__class__)
         out._timekeys = self._timekeys
 
         for key in self.keys:
-            if key in request_keys or key in ["train_mask", "val_mask", "test_mask"]:
-                out.__dict__[key] = self.__dict__[key][idx_l:idx_r].copy()
+            out.__dict__[key] = self.__dict__[key][idx_l:idx_r].copy()
 
         for key in self._timekeys:
-            if key in request_keys:
-                out.__dict__[key] = out.__dict__[key] - start
+            out.__dict__[key] = out.__dict__[key] - start
         return out
+
+    def select_by_mask(self, mask: np.ndarray):
+        r"""Return a new :obj:`Interval` object where all array attributes 
+        are indexed using the boolean mask.
+        """
+        out = super().select_by_mask(mask, timekeys=self._timekeys)
+        out._sorted = self._sorted
+        return out
+    
+    def dilate(self, size: float):
+        r"""Dilates the intervals by a given size. The dilation is performed in both
+        directions.
+        
+        Args:
+            size: The size of the dilation.
+        """
+        out = self.__class__.__new__(self.__class__)
+        out._timekeys = self._timekeys
+        out._sorted = self._sorted
+        for key in self.keys:
+            out.__dict__[key] = self.__dict__[key].copy()
+
+        half_way = (self.end[:-1] + self.start[1:]) / 2
+
+        out.start[0] = out.start[0] - size
+        out.start[1:] = np.maximum(out.start[1:] - size, half_way)
+        out.end[:-1] = np.minimum(self.end + size, half_way)
+        out.end[-1] = out.end[-1] + size
+        return out
+    
+    def difference(self, other):
+        r"""Returns the difference between two sets of intervals. The intervals are 
+        redefined as to not intersect with any interval in :obj:`other`.
+        """
+        assert (
+            self.is_disjoint()
+        ), "left Interval object must be disjoint for intersection."
+        assert (
+            other.is_disjoint()
+        ), "right Interval object must be disjoint for intersection."
+
+        assert self.is_sorted(), "left Interval object must be sorted for intersection."
+        assert (
+            other.is_sorted()
+        ), "right Interval object must be sorted for intersection."
+
+        # Create sorted list of all times in first interval
+        times_l = np.empty(2 * len(self), dtype=self.start.dtype)
+        times_l[::2], times_l[1::2] = self.start, self.end
+        # Indicator array for when a time is a "start" time
+        start_indic_l = np.zeros(2 * len(self), dtype=int)
+        start_indic_l[1::2] = 1
+        # Create sorted list of all times in second interval
+        times_r = np.empty(2 * len(other), dtype=other.start.dtype)
+        times_r[::2], times_r[1::2] = other.start, other.end
+        # Indicator array for when a time is a "start" time
+        start_indic_r = np.ones(2 * len(other), dtype=int) * 2
+        start_indic_r[1::2] = 3
+
+        # perform merge-sort and reorder indicators too
+        times_merged, merge_indices = snp.merge(times_l, times_r, indices=True)
+        start_indic_merged = np.empty(len(times_merged), dtype=int)
+        start_indic_merged[merge_indices[0]] = start_indic_l
+        start_indic_merged[merge_indices[1]] = start_indic_r
+
+        # TODO clean this up
+        start_indices = []
+        end_indices = []
+
+        ongoing_left = False
+        for i in range(len(times_merged)):
+            if start_indic_merged[i] == 0:
+                ongoing_left = True
+            elif start_indic_merged[i] == 1:
+                if start_indic_merged[i-1] in [0, 3]:
+                    start_indices.append(i-1)
+                    end_indices.append(i)
+                ongoing_left = False
+            elif start_indic_merged[i] == 2:
+                if start_indic_merged[i-1] == 0:
+                    start_indices.append(i-1)
+                    end_indices.append(i)
+                elif start_indic_merged[i-1] == 3 and ongoing_left:
+                    start_indices.append(i-1)
+                    end_indices.append(i)
+        
+        start_indices = np.array(start_indices)
+        end_indices = np.array(end_indices)
+        
+        start = times_merged[start_indices]
+        end = times_merged[end_indices]
+        return Interval(start=start, end=end)
 
     def split(
         self,
@@ -1015,7 +1697,9 @@ class Interval(ArrayDict):
         splits = []
         start = 0
         for size in sizes:
-            splits.append(self[idx[start : start + size]])
+            mask = np.zeros(len(self), dtype=bool)
+            mask[idx[start : start + size]] = True
+            splits.append(self.select_by_mask(mask))
             start += size
 
         return splits
@@ -1025,14 +1709,23 @@ class Interval(ArrayDict):
         name: str,
         interval: Interval,
     ):
-        """Create a boolean mask array with True for all intervals that are within the
-        the time intervals mentioned in interval_list.
+        """Adds a boolean mask as an array attribute, which is defined for each
+        interval in the object, and is set to :obj:`True` if the interval intersects
+        with the provided :obj:`interval` object. The mask attribute will be called 
+        :obj:`<name>_mask`.
+
+        This is used to mark intervals as part of train, validation,
+        or test sets, and is useful to ensure that there is no data leakage.
+
+        If an interval belongs to multiple splits, an error will be raised, unless this
+        is expected, in which case the method :meth:`allow_split_mask_overlap` should be
+        called.
+
         Args:
-            name: name of the mask. The mask attributed will be called <name>_split_mask
-            interval: Interval object. We will consider all intervals which have any of
-                start/end within the interval [start, end) as having a True mask.
+            name: name of the split, e.g. "train", "valid", "test".
+            interval: a set of intervals defining the split domain.
         """
-        assert not hasattr(self, f"{name}_mask"), (
+        assert f"{name}_mask" not in self.keys, (
             f"Attribute {name}_mask already exists. Use another mask name, or rename "
             f"the existing attribute."
         )
@@ -1040,6 +1733,7 @@ class Interval(ArrayDict):
         mask_array = np.zeros_like(self.start, dtype=bool)
         for start, end in zip(interval.start, interval.end):
             mask_array |= (self.start >= start) & (self.start < end)
+            # todo double check
             mask_array |= (self.end >= start) & (self.end < end)
 
         setattr(self, f"{name}_mask", mask_array)
@@ -1047,7 +1741,7 @@ class Interval(ArrayDict):
     def allow_split_mask_overlap(self):
         r"""Disables the check for split mask overlap. This means there could be an
         overlap between the intervals across different splits. This is useful when
-        splitting the intervals into multiple splits."""
+        an interval is allowed to belong to multiple splits."""
         logging.warning(
             f"You are disabling the check for split mask overlap. "
             f"This means there could be an overlap between the intervals "
@@ -1058,7 +1752,7 @@ class Interval(ArrayDict):
     @classmethod
     def linspace(cls, start: float, end: float, steps: int):
         r"""Create a regular interval with a given number of samples.
-        
+
         Args:
             start: Start time.
             end: End time.
@@ -1071,7 +1765,7 @@ class Interval(ArrayDict):
         )
 
     @classmethod
-    def from_dataframe(cls, df):
+    def from_dataframe(cls, df: pd.DataFrame, unsigned_to_long: bool=True):
         r"""Create an :obj:`Interval` object from a pandas DataFrame. The dataframe
         must have a start time and end time columns. The names of these columns need
         to be "start" and "end" (use `pd.Dataframe.rename` if needed).
@@ -1083,17 +1777,14 @@ class Interval(ArrayDict):
             df (pandas.DataFrame): DataFrame.
             unsigned_to_long (bool, optional): Whether to automatically convert unsigned
               integers to int64 dtype. Defaults to :obj:`True`.
-
-        Raises:
-            AssertionError: if the start or end column is not found in the dataframe.
-            AssertionError: if a column is specified in `kwargs` but is not found in
-            the dataframe.
-            Warning: if a column is not numeric or an ndarray.
         """
         assert "start" in df.columns, f"Column 'start' not found in dataframe."
         assert "end" in df.columns, f"Column 'end' not found in dataframe."
 
-        return super().from_dataframe(df, unsigned_to_long=False, allow_string_ndarray=False)
+        return super().from_dataframe(
+            df,
+            unsigned_to_long=unsigned_to_long,
+        )
 
     @classmethod
     def from_list(cls, interval_list: List[Tuple[float, float]]):
@@ -1103,7 +1794,7 @@ class Interval(ArrayDict):
             interval_list: List of (start, end) tuples.
 
         .. code-block:: python
-            
+
             from kirby.data import Interval
 
             interval_list = [(0, 1), (1, 2), (2, 3)]
@@ -1113,19 +1804,22 @@ class Interval(ArrayDict):
             >>> (array([0, 1, 2]), array([1, 2, 3]))
         """
         start, end = zip(*interval_list)  # Unzip the list of tuples
-        return cls(start=np.array(start), end=np.array(end))
+        return cls(
+            start=np.array(start, dtype=np.float64),
+            end=np.array(end, dtype=np.float64),
+        )
 
     def to_hdf5(self, file):
         r"""Saves the data object to an HDF5 file.
 
         Args:
             file (h5py.File): HDF5 file.
-        
+
         .. code-block:: python
-                
+
                 import h5py
                 from kirby.data import Interval
-    
+
                 interval = Interval(
                     start=np.array([0, 1, 2]),
                     end=np.array([1, 2, 3]),
@@ -1133,40 +1827,42 @@ class Interval(ArrayDict):
                     drifting_gratins_dir=np.array([0, 45, 90]),
                     timekeys=["start", "end", "go_cue_time"],
                 )
-    
+
                 with h5py.File("data.h5", "w") as f:
                     interval.to_hdf5(f)
         """
-        unicode_type_keys = []
+        _unicode_keys = []
         for key in self.keys:
             value = getattr(self, key)
 
-            if value.dtype.kind == "U": # if its a unicode string type
+            if value.dtype.kind == "U":  # if its a unicode string type
                 try:
                     # convert string arrays to fixed length ASCII bytes
                     value = value.astype("S")
                 except UnicodeEncodeError:
                     raise NotImplementedError(
-                        f"Unable to convert column '{key}' from numpy 'U' string type to fixed-length ASCII (np.dtype('S')). HDF5 does not support numpy 'U' strings."
+                        f"Unable to convert column '{key}' from numpy 'U' string type "
+                        "to fixed-length ASCII (np.dtype('S')). HDF5 does not support "
+                        "numpy 'U' strings."
                     )
-                unicode_type_keys.append(key) # keep track of the keys of the arrays that were originally unicode
-
+                # keep track of the keys of the arrays that were originally unicode
+                _unicode_keys.append(key)
             file.create_dataset(key, data=value)
 
-        file.attrs["unicode_type_keys"] = np.array(unicode_type_keys, dtype="S")
+        file.attrs["_unicode_keys"] = np.array(_unicode_keys, dtype="S")
         file.attrs["timekeys"] = np.array(self._timekeys, dtype="S")
-        file.attrs["object"] = self.__class__.__name__
         file.attrs["allow_split_mask_overlap"] = self._allow_split_mask_overlap
+        file.attrs["object"] = self.__class__.__name__
 
     @classmethod
     def from_hdf5(cls, file):
         r"""Loads the data object from an HDF5 file.
-        
+
         Args:
             file (h5py.File): HDF5 file.
-            
+
         .. code-block:: python
-        
+
             import h5py
             from kirby.data import Interval
 
@@ -1175,63 +1871,327 @@ class Interval(ArrayDict):
         """
         assert file.attrs["object"] == cls.__name__, "object type mismatch"
         data = {}
-        unicode_type_keys = file.attrs["unicode_type_keys"].astype(str).tolist()
+        _unicode_keys = file.attrs["_unicode_keys"].astype(str).tolist()
         for key, value in file.items():
-            data[key] = value
-            if key in unicode_type_keys: # if the values were originally unicode but stored as fixed length ASCII bytes
-                data[key] = data[key].astype("U") # convert back to unicode
+            data[key] = value[:]
+            # if the values were originally unicode but stored as fixed length ASCII bytes
+            if key in _unicode_keys:
+                data[key] = data[key].astype("U")
+        timekeys = file.attrs["timekeys"].astype(str).tolist()
+        obj = cls(**data, timekeys=timekeys)
 
-        obj = cls(**data)
-        obj._lazy = True
+        if file.attrs["allow_split_mask_overlap"]:
+            obj.allow_split_mask_overlap()
+
+        return obj
+
+    def __and__(self, other):
+        """Intersection of two intervals.
+        Only start/end times are considered for the intersection,
+        and only start/end times are returned in the resulting Interval
+        """
+        assert (
+            self.is_disjoint()
+        ), "left Interval object must be disjoint for intersection."
+        assert (
+            other.is_disjoint()
+        ), "right Interval object must be disjoint for intersection."
+
+        assert self.is_sorted(), "left Interval object must be sorted for intersection."
+        assert (
+            other.is_sorted()
+        ), "right Interval object must be sorted for intersection."
+
+        # Create sorted list of all times in first interval
+        times_l = np.empty(2 * len(self), dtype=self.start.dtype)
+        times_l[::2], times_l[1::2] = self.start, self.end
+        # Indicator array for when a time is a "start" time
+        start_indic_l = np.zeros(2 * len(self), dtype=int)
+        start_indic_l[::2] = 1
+
+        # Create sorted list of all times in second interval
+        times_r = np.empty(2 * len(other), dtype=other.start.dtype)
+        times_r[::2], times_r[1::2] = other.start, other.end
+        # Indicator array for when a time is a "start" time
+        start_indic_r = np.zeros(2 * len(other), dtype=int)
+        start_indic_r[::2] = 1
+
+        # perform merge-sort and reorder indicators too
+        times_merged, merge_indices = snp.merge(times_l, times_r, indices=True)
+        start_indic_merged = np.empty(len(times_merged), dtype=int)
+        start_indic_merged[merge_indices[0]] = start_indic_l
+        start_indic_merged[merge_indices[1]] = start_indic_r
+
+        # AND-ed intervals are where start-indicator changes from 1->0
+        start_indices = np.where(
+            (start_indic_merged[:-1] == 1) & (start_indic_merged[1:] == 0)
+        )[0]
+        end_indices = start_indices + 1
+
+        start = times_merged[start_indices]
+        end = times_merged[end_indices]
+        return Interval(start=start, end=end)
+
+    def __or__(self, other):
+        """Union of two intervals.
+        Only start/end times are considered for the union,
+        and only start/end times are returned in the resulting Interval
+        """
+        assert (
+            self.is_disjoint()
+        ), "left Interval object must be disjoint for intersection."
+        assert (
+            other.is_disjoint()
+        ), "right Interval object must be disjoint for intersection."
+
+        assert self.is_sorted(), "left Interval object must be sorted for intersection."
+        assert (
+            other.is_sorted()
+        ), "right Interval object must be sorted for intersection."
+
+        # Create sorted list of all times in first interval
+        times_l = np.empty(2 * len(self), dtype=self.start.dtype)
+        times_l[::2], times_l[1::2] = self.start, self.end
+        # Indicator array for when a time is a "start" time
+        start_indic_l = np.ones(2 * len(self), dtype=int)
+        start_indic_l[1::2] = -1
+
+        # Create sorted list of all times in second interval
+        times_r = np.empty(2 * len(other), dtype=other.start.dtype)
+        times_r[::2], times_r[1::2] = other.start, other.end
+        # Indicator array for when a time is a "start" time
+        start_indic_r = np.ones(2 * len(other), dtype=int)
+        start_indic_r[::2] = 1
+        start_indic_r[1::2] = -1
+
+        # perform merge-sort and reorder indicators too
+        times_merged, merge_indices = snp.merge(times_l, times_r, indices=True)
+        start_indic_merged = np.empty(1 + len(times_merged), dtype=int)
+        start_indic_merged[0] = 0
+        start_indic_merged[merge_indices[0] + 1] = start_indic_l
+        start_indic_merged[merge_indices[1] + 1] = start_indic_r
+        cumsum = np.cumsum(start_indic_merged)  # this cumsum starts from 0
+
+        # OR-ed intervals start when cumsum changes from 0 -> 1
+        # and end when cumsum is 0
+        start_indices = np.where((cumsum[:-1] == 0) & (cumsum[1:] == 1))[0]
+        end_indices = np.where(cumsum[1:] == 0)[0]
+
+        assert len(start_indices) == len(end_indices)
+
+        start = times_merged[start_indices]
+        end = times_merged[end_indices]
+        return Interval(start=start, end=end)
+
+
+class LazyInterval(Interval):
+    _lazy_ops = dict()
+    _unicode_keys = []
+
+    def _maybe_first_dim(self):
+        if "unresolved_slice" in self._lazy_ops:
+            return self.start.shape[0]
+        elif "mask" in self._lazy_ops:
+            return self._lazy_ops["mask"].sum()
+        elif isinstance(self.__dict__["start"], np.ndarray):
+            return self.start.shape[0]
+        return super()._maybe_first_dim()
+
+    def __getattribute__(self, name):
+        if not name in ["__dict__", "keys"]:
+            # intercept attribute calls
+            if name in self.keys:
+                out = self.__dict__[name]
+
+                if isinstance(out, h5py.Dataset):
+                    # convert into numpy array
+                    if "unresolved_slice" in self._lazy_ops:
+                        self._resolve_start_end_after_slice()
+                    if "slice" in self._lazy_ops:
+                        idx_l, idx_r, start = self._lazy_ops["slice"]
+                        out = out[idx_l:idx_r]
+                        if name in self._timekeys:
+                            out = out - start
+                    if "mask" in self._lazy_ops:
+                        out = out[self._lazy_ops["mask"]]
+                    if len(self._lazy_ops) == 0:
+                        out = out[:]
+
+                    if name in self._unicode_keys:
+                        # convert back to unicode
+                        out = out.astype("U")
+
+                    # store it
+                    self.__dict__[name] = out
+
+                # If all attributes are loaded, we can remove the lazy flag
+                all_loaded = all(
+                    isinstance(self.__dict__[key], np.ndarray) for key in self.keys
+                )
+                if all_loaded:
+                    self.__class__ = Interval
+                    del self._lazy_ops, self._unicode_keys
+
+                return out
+        return super(LazyInterval, self).__getattribute__(name)
+
+    def select_by_mask(self, mask: np.ndarray):
+        assert mask.ndim == 1, f"mask must be 1D, got {mask.ndim}D mask"
+        assert mask.dtype == bool, f"mask must be boolean, got {mask.dtype}"
+
+        first_dim = self._maybe_first_dim()
+        if mask.shape[0] != first_dim:
+            raise ValueError(
+                f"mask length {mask.shape[0]} does not match first dimension of arrays "
+                f"({first_dim})."
+            )
+
+        # make a copy
+        out = self.__class__.__new__(self.__class__)
+        out._unicode_keys = self._unicode_keys
+        out._timekeys = self._timekeys
+        out._lazy_ops = {}
+
+        for key in self.keys:
+            value = self.__dict__[key]
+            if isinstance(value, h5py.Dataset):
+                out.__dict__[key] = value
+            else:
+                out.__dict__[key] = value[mask].copy()
+
+        if "mask" not in self._lazy_ops:
+            out._lazy_ops["mask"] = mask
+        else:
+            out._lazy_ops["mask"] = self._lazy_ops["mask"].copy()
+            out._lazy_ops["mask"][out._lazy_ops["mask"]] = mask
+
+        if "slice" in self._lazy_ops:
+            out._lazy_ops["slice"] = self._lazy_ops["slice"]
+
+        return out
+
+    def _resolve_start_end_after_slice(self):
+        start, end = self._lazy_ops["unresolved_slice"]
+
+        # todo confirm sorted
+        # assert self.is_sorted()
+
+        # anything that starts before the end of the slicing window
+        start_vec = self.__dict__["start"][:]
+        end_vec = self.__dict__["end"][:]
+        idx_l = np.searchsorted(end_vec, start, side="right")
+
+        # anything that will end after the start of the slicing window
+        idx_r = np.searchsorted(start_vec, end)
+
+        del self._lazy_ops["unresolved_slice"]
+        self._lazy_ops["slice"] = (idx_l, idx_r, start)
+        self.__dict__["start"] = self.__dict__["start"][idx_l:idx_r] - start
+        self.__dict__["end"] = self.__dict__["end"][idx_l:idx_r] - start
+
+    def slice(self, start: float, end: float):
+        r"""Returns a new :obj:`Interval` object that contains the data between the
+        start and end times. An interval is included if it has any overlap with the
+        slicing window.
+        """
+
+        out = self.__class__.__new__(self.__class__)
+        out._unicode_keys = self._unicode_keys
+        out._lazy_ops = {}
+        out._timekeys = self._timekeys
+
+        if isinstance(self.__dict__["start"], h5py.Dataset):
+            assert "slice" not in self._lazy_ops, "slice already exists"
+            if "unresolved_slice" not in self._lazy_ops:
+                out._lazy_ops["unresolved_slice"] = (start, end)
+            else:
+                curr_start, _ = self._lazy_ops["unresolved_slice"]
+                out._lazy_ops["unresolved_slice"] = (
+                    curr_start + start,
+                    curr_start + end,
+                )
+
+            idx_l = idx_r = None
+            # out.__dict__["start"] = self.__dict__["start"]
+            # out.__dict__["end"] = self.__dict__["end"]
+
+        else:
+            if not self.is_sorted():
+                self.sort()
+
+            # anything that starts before the end of the slicing window
+            idx_l = np.searchsorted(self.end, start, side="right")
+
+            # anything that will end after the start of the slicing window
+            idx_r = np.searchsorted(self.start, end)
+
+            if "slice" not in self._lazy_ops:
+                out._lazy_ops["slice"] = (idx_l, idx_r, start)
+            else:
+                out._lazy_ops["slice"] = (
+                    self._lazy_ops["slice"][0] + idx_l,
+                    self._lazy_ops["slice"][0] + idx_r,
+                    start,
+                )
+
+        for key in self.keys:
+            value = self.__dict__[key]
+            if isinstance(value, h5py.Dataset):
+                out.__dict__[key] = value
+            else:
+                if idx_l is None:
+                    raise NotImplementedError(
+                        f"An attribute ({key}) was accessed, but timestamps failed "
+                        "to load. This is an edge case that was not handled."
+                    )
+                out.__dict__[key] = value[idx_l:idx_r].copy()
+                if key in self._timekeys:
+                    out.__dict__[key] = out.__dict__[key] - start
+
+        if "mask" in self._lazy_ops:
+            if idx_l is None:
+                raise NotImplementedError(
+                    "A mask was somehow created without accessing any attribute in the "
+                    "data. This has not been taken into account."
+                )
+            out._lazy_ops["mask"] = self._lazy_ops["mask"][idx_l:idx_r]
+        return out
+
+    def to_hdf5(self, file):
+        raise NotImplementedError("Cannot save a lazy interval object to hdf5.")
+
+    @classmethod
+    def from_hdf5(cls, file):
+        r"""Loads the data object from an HDF5 file.
+
+        Args:
+            file (h5py.File): HDF5 file.
+
+        .. code-block:: python
+
+            import h5py
+            from kirby.data import ArrayDict
+
+            with h5py
+        """
+        # todo improve error message
+        assert file.attrs["object"] == Interval.__name__, "object type mismatch"
+
+        obj = cls.__new__(cls)
+        for key, value in file.items():
+            obj.__dict__[key] = value
+
+        obj._unicode_keys = file.attrs["_unicode_keys"].astype(str).tolist()
         obj._timekeys = file.attrs["timekeys"].astype(str).tolist()
-        obj._allow_split_mask_overlap = file.attrs["allow_split_mask_overlap"]
+        obj._sorted = True
+        obj._lazy_ops = {}
 
         return obj
 
 
-class Hemisphere(StringIntEnum):
-    UNKNOWN = 0
-    LEFT = 1
-    RIGHT = 2
-
-
-@dataclass
-class Channel(Dictable):
-    """Channels are the physical channels used to record the data. Channels are grouped
-    into probes."""
-
-    id: str
-    local_index: int
-
-    # Position relative to the reference location of the probe, in microns.
-    relative_x_um: float
-    relative_y_um: float
-    relative_z_um: float
-
-    area: StringIntEnum
-    hemisphere: Hemisphere = Hemisphere.UNKNOWN
-
-
-@dataclass
-class Probe(Dictable):
-    """Probes are the physical probes used to record the data."""
-
-    id: str
-    type: RecordingTech
-    lfp_sampling_rate: float
-    wideband_sampling_rate: float
-    waveform_sampling_rate: float
-    waveform_samples: int
-    channels: list[Channel]
-    ecog_sampling_rate: float = 0.0
-
-
-AttrTensor = Union[np.ndarray, ArrayDict]
-
-
 class Data(object):
     r"""A data object is a container for other data objects such as :obj:`ArrayDict`,
-     :obj:`RegularTimeSeries`, :obj:`IrregularTimeSeries`, and :obj:`Interval` objects. 
+     :obj:`RegularTimeSeries`, :obj:`IrregularTimeSeries`, and :obj:`Interval` objects.
      But also regular objects like sclars, strings and numpy arrays.
 
     Args:
@@ -1243,9 +2203,9 @@ class Data(object):
 
         import numpy as np
         from kirby.data import (
-            ArrayDict, 
-            IrregularTimeSeries, 
-            RegularTimeSeries, 
+            ArrayDict,
+            IrregularTimeSeries,
+            RegularTimeSeries,
             Interval,
             Data,
         )
@@ -1328,104 +2288,98 @@ class Data(object):
             drifting_gratings_imgs=[8, 3, 32, 32]
         )
     """
+
+    _absolute_start = 0.0
+
     def __init__(
         self,
         *,
-        start: Optional[float] = None,
-        end: Optional[float] = None,
-        spikes: Optional[IrregularTimeSeries] = None,
-        **kwargs,
+        domain,
+        **kwargs: Dict[str, Union[str, float, int, np.ndarray, ArrayDict]],
     ):
-        # if any time-based attribute is present, start and end must be specified
-        if spikes is not None or any(
-            isinstance(value, ArrayDict) for value in kwargs.values()
-        ):
-            assert (
-                start is not None and end is not None
-            ), "If any time-based attribute is present, start and end must be specified."
-
-        self.start = start
-        self.end = end
-
-        # these variables will hold the original start and end times
-        # and won't be modified when slicing
-        self.original_start = start
-        self.original_end = end
-
-        if spikes is not None:
-            self.spikes = spikes
-
         for key, value in kwargs.items():
             setattr(self, key, value)
 
-    def __setattr__(self, name, value):
-        if isinstance(value, ArrayDict):
-            assert self.start is not None and self.end is not None, (
-                "Attempted to set an time-based attribute, but start and end times were"
-                " not specified. Please set start and end times first."
-            )
-        super(Data, self).__setattr__(name, value)
+        if domain == "auto":
+            domain = ...  # TODO: join all existing domains
 
-    def slice(self, start: float, end: float, request_keys: Optional[List[str]] = None):
-        r"""Returns a new :obj:`Data` object that contains the data between the start 
+        self._domain = domain
+
+        # these variables will hold the original start and end times
+        # and won't be modified when slicing
+        # self.original_start = start
+        # self.original_end = end
+
+        # if any time-based attribute is present, start and end must be specified
+        # todo check domain, also check when a new attribute is set
+
+    @property
+    def domain(self):
+        r"""Returns the domain of the data object."""
+        return self._domain
+
+    @property
+    def start(self):
+        r"""Returns the start time of the data object."""
+        return self._domain.start[0]
+
+    @property
+    def end(self):
+        r"""Returns the end time of the data object."""
+        return self._domain.end[-1]
+
+    @property
+    def absolute_start(self):
+        r"""Returns the start time of this slice relative to the original start time. 
+        Would be 0 if the data object has not been sliced.
+
+        .. code-block:: python
+            
+            # Assuming `data` is a Data object that hasn't been sliced
+            data.absolute_start
+            >>> 0.0
+
+            data = data.slice(1, 3)
+            data.absolute_start
+            >>> 1.0
+
+            data = data.slice(0.4, 1.4)
+            data.absolute_start
+            >>> 1.4
+        """
+        return self._absolute_start
+
+    def slice(self, start: float, end: float):
+        r"""Returns a new :obj:`Data` object that contains the data between the start
         and end times. This method will slice all time-based attributes that are present
         in the data object.
-
-        .. note::
-            `request_keys` is a list of keys to include in the returned object. The keys
-            in the request_keys list can be nested using dots. For example, if the
-            request_keys list is ["spikes.timestamps", "spikes.unit_index"], the
-            returned object will only contain the timestamps and unit_index attributes
-            of the spikes object.
 
         Args:
             start: Start time.
             end: End time.
-            request_keys: List of keys to include in the returned object. If
-                :obj:`None`, all keys will be included.
         """
-        if self.start is None:
-            # this data object does not have any time-based attributes
-            return copy.deepcopy(self)
-
         out = self.__class__.__new__(self.__class__)
 
-        if request_keys is None:
-            request_keys = self.keys
-
-        request_tree = parse_request_keys(request_keys)
-
         for key, value in self.__dict__.items():
-            if key in request_tree:
-                if isinstance(
-                    value, (Data, RegularTimeSeries, IrregularTimeSeries, Interval)
-                ):
-                    out.__dict__[key] = value.slice(
-                        start, end, request_keys=request_tree[key]
-                    )
-                elif isinstance(value, ArrayDict):
-                    out.__dict__[key] = copy.copy(value)
-                else:
-                    raise ValueError(
-                        f"Requested key '{key}' if of type {type(value)}, which is not "
-                        f"supported for slicing."
-                    )
-            elif key in request_tree["_root"]:
-                if isinstance(
-                    value, (RegularTimeSeries, IrregularTimeSeries, Interval)
-                ):
-                    out.__dict__[key] = value.slice(start, end, request_keys=None)
-                else:
-                    out.__dict__[key] = copy.copy(value)
+            # todo update domain
+            if key != "_domain" and isinstance(
+                value, (Data, IrregularTimeSeries, RegularTimeSeries, Interval)
+            ):
+                out.__dict__[key] = value.slice(start, end)
+            else:
+                out.__dict__[key] = copy.copy(value)
 
-        if self.start is not None:
-            # keep track of the original start and end times
-            out.original_start = self.original_start + start - self.start
-            out.original_end = self.original_end + end - self.end
 
-            # update the start and end times relative to the new slice
-            out.start = 0.0
-            out.end = end - start
+        # update domain
+        out._domain = (
+            copy.copy(self._domain) & Interval.from_list([(start, end)])
+        )
+        out._domain.start -= start
+        out._domain.end -= start
+
+        # update slice start time
+        out._absolute_start = self._absolute_start + start
+
         return out
 
     def __repr__(self) -> str:
@@ -1445,7 +2399,7 @@ class Data(object):
         return copy.deepcopy(self.__dict__)
 
     def to_hdf5(self, file):
-        r"""Saves the data object to an HDF5 file. This method will also call the 
+        r"""Saves the data object to an HDF5 file. This method will also call the
         `to_hdf5` method of all contained data objects, so that the entire data object
         is saved to the HDF5 file, i.e. no need to call `to_hdf5` for each contained
         data object.
@@ -1463,30 +2417,38 @@ class Data(object):
                 with h5py.File("data.h5", "w") as f:
                     data.to_hdf5(f)
         """
-        for key, value in self.__dict__.items():
+        for key in self.keys:
+            value = getattr(self, key)
             if isinstance(value, (Data, ArrayDict)):
                 grp = file.create_group(key)
                 value.to_hdf5(grp)
             elif isinstance(value, np.ndarray):
+                # todo add warning if array is too large
+                # recommend using ArrayDict
                 file.create_dataset(key, data=value)
             elif value is not None:
                 # each attribute should be small (generally < 64k)
                 # there is no partial I/O; the entire attribute must be read
                 file.attrs[key] = value
+
+        if self._domain is not None:
+            grp = file.create_group("domain")
+            self._domain.to_hdf5(grp)
+
         file.attrs["object"] = self.__class__.__name__
 
     @classmethod
-    def from_hdf5(cls, file):
+    def from_hdf5(cls, file, lazy=True):
         r"""Loads the data object from an HDF5 file. This method will also call the
         `from_hdf5` method of all contained data objects, so that the entire data object
         is loaded from the HDF5 file, i.e. no need to call `from_hdf5` for each contained
         data object.
-        
+
         Args:
             file (h5py.File): HDF5 file.
-            
+
         .. code-block:: python
-        
+
             import h5py
             from kirby.data import Data
 
@@ -1496,14 +2458,15 @@ class Data(object):
         data = {}
         for key, value in file.items():
             if isinstance(value, h5py.Group):
-                group_cls = globals()[value.attrs["object"]]
+                class_name = value.attrs["object"]
+                if lazy:
+                    group_cls = globals()[f"Lazy{class_name}"]
+                else:
+                    group_cls = globals()[class_name]
                 data[key] = group_cls.from_hdf5(value)
             else:
+                # if array, it will be loaded no matter what, always prefer ArrayDict
                 data[key] = value[:]
-
-        for key, value in file.attrs.items():
-            # Things like "start", "end", "original_start" etc are file attributes
-            data[key] = value
 
         obj = cls(**data)
         return obj
@@ -1518,9 +2481,7 @@ class Data(object):
         """
         for key in self.keys:
             obj = getattr(self, key)
-            if isinstance(
-                obj, (Data, RegularTimeSeries, IrregularTimeSeries, Interval)
-            ):
+            if isinstance(obj, (RegularTimeSeries, IrregularTimeSeries, Interval)):
                 obj.add_split_mask(name, interval)
 
     def _check_for_data_leakage(self, name):
@@ -1543,8 +2504,8 @@ class Data(object):
 
     @property
     def keys(self) -> List[str]:
-        r"""Returns a list of all attribute names."""
-        return list(self.__dict__.keys())
+        r"""List of all attribute names."""
+        return [x for x in self.__dict__.keys() if not x.startswith("_")]
 
     def __contains__(self, key: str) -> bool:
         r"""Returns :obj:`True` if the attribute :obj:`key` is present in the
@@ -1570,17 +2531,6 @@ class Data(object):
                     f"Could not resolve {path} in data (specifically, at level {c}))"
                 )
         return out
-
-
-def parse_request_keys(request_keys: List[str]) -> Dict[str, List[str]]:
-    request_tree = defaultdict(list)
-    for key in request_keys:
-        if "." in key:
-            key, subkey = key.split(".", 1)
-            request_tree[key].append(subkey)
-        else:
-            request_tree["_root"].append(key)
-    return request_tree
 
 
 def size_repr(key: Any, value: Any, indent: int = 0) -> str:
@@ -1611,21 +2561,3 @@ def size_repr(key: Any, value: Any, indent: int = 0) -> str:
         out = str(value)
     key = str(key).replace("'", "")
     return f"{pad}{key}={out}"
-
-
-def recursive_apply(data: Any, func: Callable) -> Any:
-    if isinstance(data, torch.Tensor):
-        return func(data)
-    elif isinstance(data, torch.nn.utils.rnn.PackedSequence):
-        return func(data)
-    elif isinstance(data, tuple) and hasattr(data, "_fields"):  # namedtuple
-        return type(data)(*(recursive_apply(d, func) for d in data))
-    elif isinstance(data, Sequence) and not isinstance(data, str):
-        return [recursive_apply(d, func) for d in data]
-    elif isinstance(data, Mapping):
-        return {key: recursive_apply(data[key], func) for key in data}
-    else:
-        try:
-            return func(data)
-        except:  # noqa
-            return data
