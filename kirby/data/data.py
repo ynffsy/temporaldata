@@ -2,16 +2,7 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Mapping, Sequence
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    List,
-    Tuple,
-    NamedTuple,
-    Optional,
-    Union,
-)
+from typing import Any, Dict, List, Tuple, Union
 import logging
 
 import h5py
