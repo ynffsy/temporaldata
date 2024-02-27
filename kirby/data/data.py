@@ -617,6 +617,8 @@ class IrregularTimeSeries(ArrayDict):
         out._timekeys = self._timekeys
         out._sorted = True  # we know the sequence is sorted
         out._domain = self._domain & Interval(start=start, end=end)
+        out._domain.start = out._domain.start - start
+        out._domain.end = out._domain.end - start
 
         # array attributes
         for key in self.keys:
@@ -969,8 +971,8 @@ class LazyIrregularTimeSeries(IrregularTimeSeries):
         out._timekeys = self._timekeys
 
         out._domain = self._domain & Interval(start=start, end=end)
-        out._domain.start = self._domain.start - start
-        out._domain.end = self._domain.end - start
+        out._domain.start = out._domain.start - start
+        out._domain.end = out._domain.end - start
 
         if isinstance(self.__dict__["timestamps"], h5py.Dataset):
             # lazy loading, we will only resolve timestamps if an attribute is accessed
@@ -2406,7 +2408,7 @@ class Data(object):
 
         # update domain
         out._domain = (
-            copy.copy(self._domain) & Interval.from_list([(start, end)])
+            copy.copy(self._domain) & Interval(start, end)
         )
         out._domain.start -= start
         out._domain.end -= start
