@@ -1571,7 +1571,7 @@ class Interval(ArrayDict):
 
         out.start[0] = out.start[0] - size
         out.start[1:] = np.maximum(out.start[1:] - size, half_way)
-        out.end[:-1] = np.minimum(self.end + size, half_way)
+        out.end[:-1] = np.minimum(self.end[:-1] + size, half_way)
         out.end[-1] = out.end[-1] + size
         return out
     
