@@ -1715,9 +1715,7 @@ class Interval(ArrayDict):
 
         mask_array = np.zeros_like(self.start, dtype=bool)
         for start, end in zip(interval.start, interval.end):
-            mask_array |= (self.start >= start) & (self.start < end)
-            # todo double check
-            mask_array |= (self.end >= start) & (self.end < end)
+            mask_array |= (self.start < end) & (self.end > start)
 
         setattr(self, f"{name}_mask", mask_array)
 
@@ -2532,8 +2530,8 @@ class Data(object):
                     f"{self}"
                 )
                 assert getattr(obj, f"{name}_mask").all(), (
-                    f"Data leakage detected split mask for '{name}' is not all True.\n"
-                    f"In Data object: \n{self}"
+                    f"Data leakage detected split mask for '{name}' is not all True "
+                    f"in self.{key}."
                 )
             if isinstance(obj, Data):
                 obj._check_for_data_leakage(name)
