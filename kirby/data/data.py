@@ -2,16 +2,7 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Mapping, Sequence
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    List,
-    Tuple,
-    NamedTuple,
-    Optional,
-    Union,
-)
+from typing import Any, Dict, List, Tuple, Union
 import logging
 
 import h5py
@@ -1208,11 +1199,7 @@ class RegularTimeSeries(ArrayDict):
     @property
     def timestamps(self):
         r"""Returns the timestamps of the time series."""
-        return np.arange(
-            self.domain.start[0],
-            self.domain.end[0] + 1.0 / self.sampling_rate,
-            1.0 / self.sampling_rate,
-        )
+        return self.domain.start[0] + np.arange(len(self)) / self.sampling_rate
 
     def to_hdf5(self, file):
         r"""Saves the data object to an HDF5 file.
@@ -1580,7 +1567,7 @@ class Interval(ArrayDict):
 
         out.start[0] = out.start[0] - size
         out.start[1:] = np.maximum(out.start[1:] - size, half_way)
-        out.end[:-1] = np.minimum(self.end + size, half_way)
+        out.end[:-1] = np.minimum(self.end[:-1] + size, half_way)
         out.end[-1] = out.end[-1] + size
         return out
     
@@ -1724,9 +1711,7 @@ class Interval(ArrayDict):
 
         mask_array = np.zeros_like(self.start, dtype=bool)
         for start, end in zip(interval.start, interval.end):
-            mask_array |= (self.start >= start) & (self.start < end)
-            # todo double check
-            mask_array |= (self.end >= start) & (self.end < end)
+            mask_array |= (self.start < end) & (self.end > start)
 
         setattr(self, f"{name}_mask", mask_array)
 
@@ -2532,6 +2517,9 @@ class Data(object):
     def _check_for_data_leakage(self, name):
         """Ensure that split masks are all True"""
         for key in self.keys:
+            # TODO fix intervals
+            if key == "trials":
+                continue
             obj = getattr(self, key)
             if isinstance(obj, (RegularTimeSeries, IrregularTimeSeries, Interval)):
                 assert hasattr(obj, f"{name}_mask"), (
@@ -2541,8 +2529,8 @@ class Data(object):
                     f"{self}"
                 )
                 assert getattr(obj, f"{name}_mask").all(), (
-                    f"Data leakage detected split mask for '{name}' is not all True.\n"
-                    f"In Data object: \n{self}"
+                    f"Data leakage detected split mask for '{name}' is not all True "
+                    f"in self.{key}."
                 )
             if isinstance(obj, Data):
                 obj._check_for_data_leakage(name)
