@@ -1199,11 +1199,7 @@ class RegularTimeSeries(ArrayDict):
     @property
     def timestamps(self):
         r"""Returns the timestamps of the time series."""
-        return np.arange(
-            self.domain.start[0],
-            self.domain.end[0] + 1.0 / self.sampling_rate,
-            1.0 / self.sampling_rate,
-        )
+        return self.domain.start[0] + np.arange(len(self)) / self.sampling_rate
 
     def to_hdf5(self, file):
         r"""Saves the data object to an HDF5 file.
