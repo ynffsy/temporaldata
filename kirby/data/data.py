@@ -1149,7 +1149,7 @@ class RegularTimeSeries(ArrayDict):
         the start and end times.
         """
 
-        start_id = int(np.floor((start - self.domain.start[0]) * self.sampling_rate))
+        start_id = int(np.ceil((start - self.domain.start[0]) * self.sampling_rate))
         end_id = int(np.floor((end - self.domain.start[0]) * self.sampling_rate))
 
         out = self.__class__.__new__(self.__class__)
@@ -2521,7 +2521,7 @@ class Data(object):
             if key == "trials":
                 continue
             obj = getattr(self, key)
-            if isinstance(obj, (RegularTimeSeries, IrregularTimeSeries, Interval)):
+            if isinstance(obj, (IrregularTimeSeries, Interval)):
                 assert hasattr(obj, f"{name}_mask"), (
                     f"Split mask for '{name}' not found in Data object. "
                     f"Please register this split in prepare_data.py using "
