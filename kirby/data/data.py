@@ -143,7 +143,9 @@ class ArrayDict(object):
                 f"({first_dim})."
             )
 
-        return self.__class__(**{k: getattr(self, k)[mask].copy() for k in self.keys}, **kwargs)
+        return self.__class__(
+            **{k: getattr(self, k)[mask].copy() for k in self.keys}, **kwargs
+        )
 
     @classmethod
     def from_dataframe(cls, df, unsigned_to_long=True, **kwargs):
@@ -533,14 +535,13 @@ class IrregularTimeSeries(ArrayDict):
 
         self._domain = domain
 
-
     # todo add setter for domain
     @property
     def domain(self):
         r"""The time domain over which the time series is defined. Usually a single
         interval, but could also be a set of intervals."""
         return self._domain
-    
+
     @domain.setter
     def domain(self, value: Interval):
         if not isinstance(value, Interval):
@@ -627,9 +628,9 @@ class IrregularTimeSeries(ArrayDict):
         for key in self._timekeys:
             out.__dict__[key] = out.__dict__[key] - start
         return out
-    
+
     def select_by_mask(self, mask: np.ndarray):
-        r"""Return a new :obj:`IrregularTimeSeries` object where all array attributes 
+        r"""Return a new :obj:`IrregularTimeSeries` object where all array attributes
         are indexed using the boolean mask.
 
         Note that this will not update the domain, as it is unclear how to resolve the
@@ -682,8 +683,8 @@ class IrregularTimeSeries(ArrayDict):
             unsigned_to_long: Whether to automatically convert unsigned
               integers to int64 dtype. Defaults to :obj:`True`.
             domain (optional): The domain over which the time
-                series is defined. If set to :obj:`"auto"`, the domain will be 
-                automatically the interval defined by the minimum and maximum 
+                series is defined. If set to :obj:`"auto"`, the domain will be
+                automatically the interval defined by the minimum and maximum
                 timestamps. Defaults to :obj:`"auto"`.
         """
         if "timestamps" not in df.columns:
@@ -850,9 +851,9 @@ class LazyIrregularTimeSeries(IrregularTimeSeries):
 
                     # first we check if timestamps was resolved
                     if "unresolved_slice" in self._lazy_ops:
-                        # slice and unresolved_slice cannot both be queued 
+                        # slice and unresolved_slice cannot both be queued
                         assert "slice" not in self._lazy_ops
-                        # slicing never happened, and we need to resolve timestamps 
+                        # slicing never happened, and we need to resolve timestamps
                         # to identify the time points that we need
                         self._resolve_timestamps_after_slice()
                         # after this "unresolved_slice" is replaced with "slice"
@@ -863,7 +864,7 @@ class LazyIrregularTimeSeries(IrregularTimeSeries):
                         out = out[idx_l:idx_r]
                         if name in self._timekeys:
                             out = out - start
-                    
+
                     # there could have been masking, so apply it
                     if "mask" in self._lazy_ops:
                         out = out[self._lazy_ops["mask"]]
@@ -982,7 +983,9 @@ class LazyIrregularTimeSeries(IrregularTimeSeries):
             else:
                 # for some reason, blind slicing was done twice, and there is no need to
                 # resolve the timestamps again
-                curr_start, curr_end, sequence_start = self._lazy_ops["unresolved_slice"]
+                curr_start, curr_end, sequence_start = self._lazy_ops[
+                    "unresolved_slice"
+                ]
                 out._lazy_ops["unresolved_slice"] = (
                     curr_start + start,
                     min(curr_start + end, curr_end),
@@ -1446,7 +1449,7 @@ class Interval(ArrayDict):
         # interval especially when defining a domain
         if isinstance(start, (int, float)):
             start = np.array([start], dtype=np.float64)
-        
+
         if isinstance(end, (int, float)):
             end = np.array([end], dtype=np.float64)
 
@@ -1543,17 +1546,17 @@ class Interval(ArrayDict):
         return out
 
     def select_by_mask(self, mask: np.ndarray):
-        r"""Return a new :obj:`Interval` object where all array attributes 
+        r"""Return a new :obj:`Interval` object where all array attributes
         are indexed using the boolean mask.
         """
         out = super().select_by_mask(mask, timekeys=self._timekeys)
         out._sorted = self._sorted
         return out
-    
+
     def dilate(self, size: float):
         r"""Dilates the intervals by a given size. The dilation is performed in both
         directions.
-        
+
         Args:
             size: The size of the dilation.
         """
@@ -1570,9 +1573,9 @@ class Interval(ArrayDict):
         out.end[:-1] = np.minimum(self.end[:-1] + size, half_way)
         out.end[-1] = out.end[-1] + size
         return out
-    
+
     def difference(self, other):
-        r"""Returns the difference between two sets of intervals. The intervals are 
+        r"""Returns the difference between two sets of intervals. The intervals are
         redefined as to not intersect with any interval in :obj:`other`.
         """
         if not self.is_disjoint():
@@ -1583,7 +1586,6 @@ class Interval(ArrayDict):
             raise ValueError("left Interval object must be sorted.")
         if not other.is_sorted():
             raise ValueError("right Interval object must be sorted.")
-
 
         # new start and end arrays where the intersection will be stored
         start = np.array([])
@@ -1604,7 +1606,11 @@ class Interval(ArrayDict):
                 else:
                     interval_open_right = True
                     # we have an opening and a closing paranthesis
-                    if interval_open_left and current_start is not None and current_start != ptime:
+                    if (
+                        interval_open_left
+                        and current_start is not None
+                        and current_start != ptime
+                    ):
                         # we have a non-zero interval
                         start = np.append(start, current_start)
                         end = np.append(end, ptime)
@@ -1690,7 +1696,7 @@ class Interval(ArrayDict):
     ):
         """Adds a boolean mask as an array attribute, which is defined for each
         interval in the object, and is set to :obj:`True` if the interval intersects
-        with the provided :obj:`interval` object. The mask attribute will be called 
+        with the provided :obj:`interval` object. The mask attribute will be called
         :obj:`<name>_mask`.
 
         This is used to mark intervals as part of train, validation,
@@ -1742,7 +1748,7 @@ class Interval(ArrayDict):
         )
 
     @classmethod
-    def from_dataframe(cls, df: pd.DataFrame, unsigned_to_long: bool=True):
+    def from_dataframe(cls, df: pd.DataFrame, unsigned_to_long: bool = True):
         r"""Create an :obj:`Interval` object from a pandas DataFrame. The dataframe
         must have a start time and end time columns. The names of these columns need
         to be "start" and "end" (use `pd.Dataframe.rename` if needed).
@@ -1882,7 +1888,7 @@ class Interval(ArrayDict):
 
         # we use a variable to store the current opening time
         current_start = None
-        
+
         for ptime, pop, pl in sorted_traversal(self, other):
             if pop:
                 # this is an opening paranthesis
@@ -1913,7 +1919,6 @@ class Interval(ArrayDict):
             raise ValueError("left Interval object must be sorted.")
         if not other.is_sorted():
             raise ValueError("right Interval object must be sorted.")
-
 
         # new start and end arrays where the intersection will be stored
         start = np.array([])
@@ -2168,11 +2173,11 @@ class LazyInterval(Interval):
 def sorted_traversal(lintervals, rintervals):
     # we use an index to iterate over the intervals from both left and right objects
     lidx, ridx = 0, 0
-    # to track whether we are looking at start or end, we use a binary flag that 
+    # to track whether we are looking at start or end, we use a binary flag that
     # denotes whether the current pointer is an "opening paranthesis" (lop=True)
     # or a "closing paranthesis" (lop=False)
     lop, rop = True, True
-    
+
     while (lidx < len(lintervals)) or (ridx < len(rintervals)):
         # retrieve the time of the pointer in the left object
         if lidx < len(lintervals):
@@ -2181,7 +2186,7 @@ def sorted_traversal(lintervals, rintervals):
         else:
             # exhausted all intervals in left object
             ltime = np.inf
-        
+
         # retrieve the time of the pointer in the right object
         if ridx < len(rintervals):
             # retrieve the time of the next interval in right object
@@ -2189,14 +2194,14 @@ def sorted_traversal(lintervals, rintervals):
         else:
             # exhausted all intervals in right object
             rtime = np.inf
-        
+
         # figure out which is the next pointer to process
         if (ltime < rtime) or (ltime == rtime and lop):
             # the next timestamps to consider is from the left object
             ptime = ltime  # time of the current pointer
             pop = lop  # True if pointer is opening
-            pl = True # True if pointer is from left object 
-            
+            pl = True  # True if pointer is from left object
+
             # move the left pointer accordingly
             if lop:
                 # we only considered the start time, we now need to consider the
@@ -2360,11 +2365,11 @@ class Data(object):
 
     @property
     def absolute_start(self):
-        r"""Returns the start time of this slice relative to the original start time. 
+        r"""Returns the start time of this slice relative to the original start time.
         Would be 0 if the data object has not been sliced.
 
         .. code-block:: python
-            
+
             # Assuming `data` is a Data object that hasn't been sliced
             data.absolute_start
             >>> 0.0
@@ -2399,11 +2404,8 @@ class Data(object):
             else:
                 out.__dict__[key] = copy.copy(value)
 
-
         # update domain
-        out._domain = (
-            copy.copy(self._domain) & Interval(start, end)
-        )
+        out._domain = copy.copy(self._domain) & Interval(start, end)
         out._domain.start -= start
         out._domain.end -= start
 

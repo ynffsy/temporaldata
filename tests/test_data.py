@@ -301,10 +301,10 @@ def test_irregular_timeseries_slice():
 
 
 def test_irregular_timeseries_sortedness():
-    a = IrregularTimeSeries(np.array([0., 1., 2.]), domain="auto")
+    a = IrregularTimeSeries(np.array([0.0, 1.0, 2.0]), domain="auto")
     assert a.is_sorted()
 
-    a.timestamps = np.array([0., 2., 1.])
+    a.timestamps = np.array([0.0, 2.0, 1.0])
     assert not a.is_sorted()
 
     a = a.slice(0, 1.5)
@@ -530,7 +530,7 @@ def test_regular_to_irregular_timeseries():
 
 def test_interval():
     data = Interval(
-        start=np.array([0., 1, 2]),
+        start=np.array([0.0, 1, 2]),
         end=np.array([1, 2, 3]),
         go_cue_time=np.array([0.5, 1.5, 2.5]),
         drifting_gratings_dir=np.array([0, 45, 90]),
@@ -552,6 +552,7 @@ def test_interval():
             start=np.array([0.1, np.nan, 0.3, 0.4, 0.5, 0.6]),
             end=np.array([1, 2, 3, 4, 5, 6]),
         )
+
 
 def test_interval_select_by_mask():
     # test masking
@@ -589,7 +590,7 @@ def test_interval_slice():
     assert np.allclose(data.go_cue_time, np.array([0.5, 1.5, 2.5, 3.5]))
     assert np.allclose(data.drifting_gratings_dir, np.array([90, 45, 180, 90]))
 
-    data = data.slice(0., 2.0)
+    data = data.slice(0.0, 2.0)
 
     assert len(data) == 2
     assert np.allclose(data.start, np.array([0, 1]))
@@ -707,7 +708,7 @@ def test_lazy_interval(test_filepath):
 
         assert np.allclose(data.go_cue_time, np.array([0.5, 1.5, 2.5, 3.5]))
 
-        data = data.slice(0., 2.0)
+        data = data.slice(0.0, 2.0)
 
         assert len(data) == 2
         assert np.allclose(data.start, np.array([0, 1]))
@@ -729,7 +730,6 @@ def test_lazy_interval(test_filepath):
         assert np.allclose(data.start, np.array([0, 3]))
 
 
-
 def test_data():
     data = Data(
         session_id="session_0",
@@ -742,7 +742,7 @@ def test_data():
         ),
         lfp=RegularTimeSeries(
             raw=np.zeros((1000, 3)),
-            sampling_rate=250.,
+            sampling_rate=250.0,
             domain="auto",
         ),
         units=ArrayDict(
@@ -758,10 +758,17 @@ def test_data():
         drifting_gratings_imgs=np.zeros((8, 3, 32, 32)),
     )
 
-    assert data.keys == ["session_id", "spikes", "lfp", "units", "trials", "drifting_gratings_imgs"]
+    assert data.keys == [
+        "session_id",
+        "spikes",
+        "lfp",
+        "units",
+        "trials",
+        "drifting_gratings_imgs",
+    ]
 
-    data = data.slice(1., 3.)
-    assert data.absolute_start == 1.
+    data = data.slice(1.0, 3.0)
+    assert data.absolute_start == 1.0
 
     assert ["session_id", "spikes", "lfp", "units", "trials", "drifting_gratings_imgs"]
 

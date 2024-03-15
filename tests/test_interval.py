@@ -94,126 +94,147 @@ def test_split():
 
 
 def test_and():
-    op = lambda x,y: x & y
+    op = lambda x, y: x & y
 
     I1 = Interval.from_list([(1.0, 2.3)])
     I2 = Interval.from_list([(1.7, 6.9)])
     Iexp = Interval.from_list([(1.7, 2.3)])
     easy_symmetric_check(I1, I2, Iexp, op)
 
-    I1 = Interval.from_list([
-        (1.0, 2.3),
-        (3.0, 4.0),
-        (5.6, 6.9),
-        (8.0, 10.0),
-    ])
-    I2 = Interval.from_list([
-        (1.7, 2.1),
-        (3.2, 4.2),
-        (5.4, 6.7),
-        (8.2, 9.0), 
-        (9.5, 10.2),
-    ])
-    Iexp = Interval.from_list([
-        (1.7, 2.1),
-        (3.2, 4.0),
-        (5.6, 6.7),
-        (8.2, 9.0),
-        (9.5, 10.0),
-    ])
+    I1 = Interval.from_list(
+        [
+            (1.0, 2.3),
+            (3.0, 4.0),
+            (5.6, 6.9),
+            (8.0, 10.0),
+        ]
+    )
+    I2 = Interval.from_list(
+        [
+            (1.7, 2.1),
+            (3.2, 4.2),
+            (5.4, 6.7),
+            (8.2, 9.0),
+            (9.5, 10.2),
+        ]
+    )
+    Iexp = Interval.from_list(
+        [
+            (1.7, 2.1),
+            (3.2, 4.0),
+            (5.6, 6.7),
+            (8.2, 9.0),
+            (9.5, 10.0),
+        ]
+    )
     easy_symmetric_check(I1, I2, Iexp, op)
 
-    I1 = Interval.from_list([(0., 1.), (1.7, 6.9)])
-    I2 = Interval.from_list([(0., 1.), (6.9, 8.4)])
-    Iexp = Interval.from_list([(0., 1.),])
+    I1 = Interval.from_list([(0.0, 1.0), (1.7, 6.9)])
+    I2 = Interval.from_list([(0.0, 1.0), (6.9, 8.4)])
+    Iexp = Interval.from_list(
+        [
+            (0.0, 1.0),
+        ]
+    )
     easy_symmetric_check(I1, I2, Iexp, op)
 
 
 def test_or():
-    op = lambda x,y: x | y
+    op = lambda x, y: x | y
 
     I1 = Interval.from_list([(1.0, 2.3)])
     I2 = Interval.from_list([(1.7, 6.9)])
     Iexp = Interval.from_list([(1.0, 6.9)])
     easy_symmetric_check(I1, I2, Iexp, op)
 
-    I1 = Interval.from_list([
-        (1.0, 2.3),
-        (3.0, 4.0),
-        (5.6, 6.9),
-        (8.0, 10.0),
-    ])
-    I2 = Interval.from_list([
-        (1.7, 2.1),
-        (3.2, 4.2),
-        (5.4, 6.7),
-        (8.2, 9.0), (9.5, 10.2),
-    ])
-    Iexp = Interval.from_list([
-        (1.0, 2.3),
-        (3.0, 4.2),
-        (5.4, 6.9),
-        (8.0, 10.2),
-    ])
+    I1 = Interval.from_list(
+        [
+            (1.0, 2.3),
+            (3.0, 4.0),
+            (5.6, 6.9),
+            (8.0, 10.0),
+        ]
+    )
+    I2 = Interval.from_list(
+        [
+            (1.7, 2.1),
+            (3.2, 4.2),
+            (5.4, 6.7),
+            (8.2, 9.0),
+            (9.5, 10.2),
+        ]
+    )
+    Iexp = Interval.from_list(
+        [
+            (1.0, 2.3),
+            (3.0, 4.2),
+            (5.4, 6.9),
+            (8.0, 10.2),
+        ]
+    )
     easy_symmetric_check(I1, I2, Iexp, op)
 
 
-
 def test_difference():
-    op = lambda x,y: x.difference(y)
+    op = lambda x, y: x.difference(y)
 
     I1 = Interval.from_list([(1.0, 2.3)])
     I2 = Interval.from_list([(1.7, 6.9)])
     Iexp = Interval.from_list([(1.0, 1.7)])
     easy_check(I1, I2, Iexp, op)
 
-    I1 = Interval.from_list([
-        (1.0, 2.3),
-        (3.0, 4.0),
-        (5.6, 6.9),
-        (8.0, 10.0),
-        (12.0, 13.0),
-    ])
-    I2 = Interval.from_list([
-        (1.7, 2.1),
-        (3.2, 4.2),
-        (5.4, 6.7),
-        (8.2, 9.0), 
-        (9.5, 10.2),
-    ])
-    Iexp = Interval.from_list([
-        (1.0, 1.7),
-        (2.1, 2.3),
-        (3.0, 3.2),
-        (6.7, 6.9),
-        (8.0, 8.2),
-        (9.0, 9.5),
-        (12.0, 13.0),
-    ])
+    I1 = Interval.from_list(
+        [
+            (1.0, 2.3),
+            (3.0, 4.0),
+            (5.6, 6.9),
+            (8.0, 10.0),
+            (12.0, 13.0),
+        ]
+    )
+    I2 = Interval.from_list(
+        [
+            (1.7, 2.1),
+            (3.2, 4.2),
+            (5.4, 6.7),
+            (8.2, 9.0),
+            (9.5, 10.2),
+        ]
+    )
+    Iexp = Interval.from_list(
+        [
+            (1.0, 1.7),
+            (2.1, 2.3),
+            (3.0, 3.2),
+            (6.7, 6.9),
+            (8.0, 8.2),
+            (9.0, 9.5),
+            (12.0, 13.0),
+        ]
+    )
     easy_check(I1, I2, Iexp, op)
 
-    I1 = Interval.from_list([(1.0, 10.)])
+    I1 = Interval.from_list([(1.0, 10.0)])
     I2 = Interval.from_list([(1.7, 6.9), (6.9, 8.4)])
-    Iexp = Interval.from_list([(1.0, 1.7), (8.4, 10.)])
+    Iexp = Interval.from_list([(1.0, 1.7), (8.4, 10.0)])
     easy_check(I1, I2, Iexp, op)
 
-    I1 = Interval.from_list([(2.0, 10.)])
-    I2 = Interval.from_list([(1.0, 20.)])
+    I1 = Interval.from_list([(2.0, 10.0)])
+    I2 = Interval.from_list([(1.0, 20.0)])
     Iexp = Interval(np.array([]), np.array([]))
     easy_check(I1, I2, Iexp, op)
 
-    I1 = Interval.from_list([(1., 3.)])
-    I2 = Interval.from_list([(3., 5.)])
+    I1 = Interval.from_list([(1.0, 3.0)])
+    I2 = Interval.from_list([(3.0, 5.0)])
     easy_check(I1, I2, I1, op)
-
 
 
 # helper function
 def easy_eq(interval1, interval2):
     return (
-        len(interval1) == len(interval2) and
-        np.allclose(interval1.start, interval2.start) and 
-        np.allclose(interval1.end, interval2.end)
+        len(interval1) == len(interval2)
+        and np.allclose(interval1.start, interval2.start)
+        and np.allclose(interval1.end, interval2.end)
     )
 
 
