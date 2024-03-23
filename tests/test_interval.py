@@ -228,6 +228,16 @@ def test_difference():
     I2 = Interval.from_list([(3.0, 5.0)])
     easy_check(I1, I2, I1, op)
 
+    I1 = Interval(1700.0, 1740.0)
+    I2 = Interval(np.array([1716.0, 1722.5]), np.array([1722.0, 1740.0]))
+    Iexp = Interval(np.array([1700.0, 1722.0]), np.array([1716.0, 1722.5]))
+    easy_check(I1, I2, Iexp, op)
+
+    I1 = Interval(1700.0, 1726.0)
+    I2 = Interval(np.array([1716.0, 1722.0]), np.array([1722.0, 1730.0]))
+    Iexp = Interval(1700.0, 1716.0)
+    easy_check(I1, I2, Iexp, op)
+
 
 # helper function
 def easy_eq(interval1, interval2):

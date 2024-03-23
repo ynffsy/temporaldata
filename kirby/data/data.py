@@ -1614,7 +1614,7 @@ class Interval(ArrayDict):
                         # we have a non-zero interval
                         start = np.append(start, current_start)
                         end = np.append(end, ptime)
-                        current_start = None
+                    current_start = None
             else:
                 # closing
                 if pl:
