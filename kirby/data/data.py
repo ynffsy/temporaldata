@@ -1275,6 +1275,16 @@ class LazyRegularTimeSeries(RegularTimeSeries):
                 if isinstance(value, np.ndarray):
                     return value.shape[0]
 
+            if "slice" in self._lazy_ops:
+                # TODO add more constraints to the domain in RegularTimeSeries
+                # we know the domain and the sampling rate, we can infer the number of pts
+                return int(
+                    np.floor(
+                        (self.domain.end[-1] - self.domain.start[0])
+                        * self.sampling_rate
+                    )
+                )
+
             # otherwise nothing was loaded, return the first dim of the h5py dataset
             return self.__dict__[self.keys[0]].shape[0]
 

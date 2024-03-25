@@ -518,6 +518,16 @@ def test_lazy_regular_timeseries(test_filepath):
         assert np.allclose(data.gamma, gamma[375:625])
         assert np.allclose(data.raw, raw[375:625])
 
+    with h5py.File(test_filepath, "r") as f:
+        data = LazyRegularTimeSeries.from_hdf5(f)
+        data = data.slice(1.0, 3.0)
+
+        # timestamps is a property not an attribute, make sure it's defined properly
+        # even if no other attribute is loaded
+        assert len(data.timestamps) == 500
+
+        assert np.allclose(data.timestamps, np.arange(0.0, 2.0, 1 / 250.0))
+
 
 def test_regular_to_irregular_timeseries():
     a = RegularTimeSeries(
