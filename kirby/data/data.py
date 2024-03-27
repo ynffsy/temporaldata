@@ -1898,21 +1898,34 @@ class Interval(ArrayDict):
 
         # we use a variable to store the current opening time
         current_start = None
-
+        interval_open_left = False
+        interval_open_right = False
         for ptime, pop, pl in sorted_traversal(self, other):
             if pop:
                 # this is an opening paranthesis
                 # update current_start
                 current_start = ptime
+                if pl:
+                    interval_open_left = True
+                else:
+                    interval_open_right = True
             else:
                 # this is a closing paranthesis
-                if current_start is not None:
+                if (
+                    current_start is not None
+                    and interval_open_left
+                    and interval_open_right
+                ):
                     # we have an opening and a closing paranthesis
                     if current_start != ptime:
                         # we have a non-zero interval
                         start = np.append(start, current_start)
                         end = np.append(end, ptime)
                     current_start = None
+                if pl:
+                    interval_open_left = False
+                else:
+                    interval_open_right = False
 
         return Interval(start=start, end=end)
 
@@ -1958,6 +1971,7 @@ class Interval(ArrayDict):
                         current_start = ptime
                         current_end = None
                         end_still_coming = True
+                        current_start_is_from_left = pl
             else:
                 if pl == current_start_is_from_left:
                     end_still_coming = False

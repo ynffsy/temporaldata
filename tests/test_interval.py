@@ -138,6 +138,12 @@ def test_and():
     )
     easy_symmetric_check(I1, I2, Iexp, op)
 
+    I1 = Interval.from_list([(0.0, 1.0), (2.0, 3.0), (4.0, 5.0), (6.0, 7.0)])
+    I2 = Interval.from_list([(10.0, 11.0), (12.0, 13.0), (14.0, 15.0), (16.0, 17.0)])
+
+    Iexp = Interval(np.array([]), np.array([]))
+    easy_symmetric_check(I1, I2, Iexp, op)
+
 
 def test_or():
     op = lambda x, y: x | y
@@ -170,6 +176,23 @@ def test_or():
             (3.0, 4.2),
             (5.4, 6.9),
             (8.0, 10.2),
+        ]
+    )
+    easy_symmetric_check(I1, I2, Iexp, op)
+
+    I1 = Interval.from_list([(0.0, 1.0), (2.0, 3.0), (4.0, 5.0), (6.0, 7.0)])
+    I2 = Interval.from_list([(10.0, 11.0), (12.0, 13.0), (14.0, 15.0), (16.0, 17.0)])
+
+    Iexp = Interval.from_list(
+        [
+            (0.0, 1.0),
+            (2.0, 3.0),
+            (4.0, 5.0),
+            (6.0, 7.0),
+            (10.0, 11.0),
+            (12.0, 13.0),
+            (14.0, 15.0),
+            (16.0, 17.0),
         ]
     )
     easy_symmetric_check(I1, I2, Iexp, op)
