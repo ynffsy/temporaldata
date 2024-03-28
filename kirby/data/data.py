@@ -115,6 +115,12 @@ class ArrayDict(object):
         r"""Return a new :obj:`ArrayDict` object where all array attributes are indexed
         using the boolean mask.
 
+        Args:
+            mask: Boolean array used for masking. The mask needs to be 1-dimensional,
+                and of equal length as the first dimension of the :cls:`ArrayDict`.
+            **kwargs: Private attributes that will not be masked will need to be passed
+                as arguments.
+
         .. code-block:: python
 
             import numpy as np
@@ -143,6 +149,8 @@ class ArrayDict(object):
                 f"({first_dim})."
             )
 
+        # kwargs are other private attributes
+        # TODO automatically add private attributes
         return self.__class__(
             **{k: getattr(self, k)[mask].copy() for k in self.keys}, **kwargs
         )
@@ -271,6 +279,10 @@ class ArrayDict(object):
         Args:
             file (h5py.File): HDF5 file.
 
+        .. note::
+            This method will load all data in memory, if you would like to use lazy
+            loading, call :meth:`LazyArrayDict.from_hdf5` instead.
+
         .. code-block:: python
 
             import h5py
@@ -302,12 +314,12 @@ class LazyArrayDict(ArrayDict):
     r"""Lazy variant of :obj:`ArrayDict`. The data is not loaded until it is accessed.
     This class is meant to be used when the data is too large to fit in memory, and
     is intended to be intantiated via. :obj:`LazyArrayDict.from_hdf5`.
-    """
 
-    # to access an attribute without triggering the lazy loading use self.__dict__[key]
-    # otherwise using self.key or getattr(self, key) will trigger the lazy loading
-    # and will automatically convert the h5py dataset to a numpy array as well as apply
-    # any outstanding masks.
+    .. note:: To access an attribute without triggering the in-memory loading use
+        self.__dict__[key] otherwise using self.key or getattr(self, key) will trigger
+        the lazy loading and will automatically convert the h5py dataset to a numpy
+        array as well as apply any outstanding masks.
+    """
 
     _lazy_ops = dict()
     _unicode_keys = []
@@ -457,7 +469,7 @@ class IrregularTimeSeries(ArrayDict):
         domain: an :obj:`Interval` object that defines the domain over which the
             timeseries is defined. If set to :obj:`"auto"`, the domain will be
             automatically the interval defined by the minimum and maximum timestamps.
-        **kwargs: arrays that shares the same first dimension.
+        **kwargs: arrays that shares the same first dimension N.
 
     .. code-block:: python
 
@@ -478,18 +490,27 @@ class IrregularTimeSeries(ArrayDict):
             waveforms=[6, 48]
         )
 
+        spikes.domain.start, spikes.domain.end
+        >>> (array([0.1]), array([0.6]))
+
         spikes.keys
         >>> ['unit_index', 'timestamps', 'waveforms']
 
         spikes.is_sorted()
         >>> True
 
-        spikes.slice(0.2, 0.5)
+        slice_of_spikes = spikes.slice(0.2, 0.5)
         >>> IrregularTimeseries(
             unit_index=[3],
             timestamps=[3],
             waveforms=[3, 48]
         )
+
+        slice_of_spikes.domain.start, slice_of_spikes.domain.end
+        >>> (array([0.]), array([0.3]))
+
+        slice_of_spikes.timestamps
+        >>> array([0. , 0.1, 0.2])
     """
 
     _sorted = None
@@ -769,6 +790,10 @@ class IrregularTimeSeries(ArrayDict):
         Args:
             file (h5py.File): HDF5 file.
 
+        .. note::
+            This method will load all data in memory, if you would like to use lazy
+            loading, call :meth:`LazyIrregularTimeSeries.from_hdf5` instead.
+
         .. code-block:: python
 
             import h5py
@@ -805,6 +830,17 @@ class IrregularTimeSeries(ArrayDict):
 
 
 class LazyIrregularTimeSeries(IrregularTimeSeries):
+    r"""Lazy variant of :obj:`IrregularTimeSeries`. The data is not loaded until it is
+    accessed. This class is meant to be used when the data is too large to fit in
+    memory, and is intended to be intantiated via.
+    :obj:`LazyIrregularTimeSeries.from_hdf5`.
+
+    .. note:: To access an attribute without triggering the in-memory loading use
+        self.__dict__[key] otherwise using self.key or getattr(self, key) will trigger
+        the lazy loading and will automatically convert the h5py dataset to a numpy
+        array as well as apply any outstanding masks.
+    """
+
     _lazy_ops = dict()
     _unicode_keys = []
 
@@ -1082,8 +1118,9 @@ class LazyIrregularTimeSeries(IrregularTimeSeries):
 
 class RegularTimeSeries(ArrayDict):
     """A regular time series is the same as an irregular time series, but it has a
-    regular sampling rate. This allows for faster indexing and meaningful Fourier
-    operations. The first dimension of all attributes must be the time dimension.
+    regular sampling rate. This allows for faster indexing, possibility of patching data
+    and meaningful Fourier operations. The first dimension of all attributes must be
+    the time dimension.
 
     .. note:: If you have a matrix of shape (N, T), where N is the number of channels
     and T is the number of time points, you should transpose it to (T, N) before passing
@@ -1091,6 +1128,8 @@ class RegularTimeSeries(ArrayDict):
 
     Args:
         sampling_rate: Sampling rate in Hz.
+        domain: an :obj:`Interval` object that defines the domain over which the
+            timeseries is defined. It is not possible to set domain to :obj:`"auto"`.
         **kwargs: Arbitrary keyword arguments where the values are arbitrary
             multi-dimensional (2d, 3d, ..., nd) arrays with shape (N, *).
 
@@ -1103,6 +1142,7 @@ class RegularTimeSeries(ArrayDict):
         lfp = RegularTimeSeries(
             raw=np.zeros((1000, 128)),
             sampling_rate=250.,
+            domain=Interval(0., 4.),
         )
 
         lfp.slice(0, 1)
@@ -1128,6 +1168,7 @@ class RegularTimeSeries(ArrayDict):
 
         self._sampling_rate = sampling_rate
 
+        # TODO add a start argument to simplify domain
         if domain == "auto":
             domain = Interval(
                 start=np.array([0.0]), end=np.array([(len(self) - 1) / sampling_rate])
@@ -1151,6 +1192,8 @@ class RegularTimeSeries(ArrayDict):
         r"""Returns a new :obj:`RegularTimeSeries` object that contains the data between
         the start and end times.
         """
+        # TODO update domain
+        # TODO come up with the right slicing heuristic
 
         start_id = int(np.ceil((start - self.domain.start[0]) * self.sampling_rate))
         end_id = int(np.floor((end - self.domain.start[0]) * self.sampling_rate))
@@ -1173,12 +1216,16 @@ class RegularTimeSeries(ArrayDict):
         name: str,
         interval: Interval,
     ):
-        """Create a boolean mask array with True for all timestamps that are within the
-        intervals.
+        """Adds a boolean mask as an array attribute, which is defined for each
+        timestamp, and is set to :obj:`True` for all timestamps that are within
+        :obj:`interval`. The mask attribute will be called :obj:`<name>_mask`.
+
+        This is used to mark points in the time series, as part of train, validation,
+        or test sets, and is useful to ensure that there is no data leakage.
+
         Args:
-            name: name of the mask. The mask attribute will be called <name>_mask
-            interval: Interval object. We will consider all timestamps that are within
-                the intervals [start, end) as having a True mask.
+            name: name of the split, e.g. "train", "valid", "test".
+            interval: a set of intervals defining the split domain.
         """
         assert not hasattr(self, f"{name}_mask"), (
             f"Attribute {name}_mask already exists. Use another mask name, or rename "
@@ -1218,6 +1265,7 @@ class RegularTimeSeries(ArrayDict):
                 data = RegularTimeSeries(
                     raw=np.zeros((1000, 128)),
                     sampling_rate=250.,
+                    domain=Interval(0., 4.),
                 )
 
                 with h5py.File("data.h5", "w") as f:
@@ -1241,6 +1289,10 @@ class RegularTimeSeries(ArrayDict):
         Args:
             file (h5py.File): HDF5 file.
 
+        .. note::
+            This method will load all data in memory, if you would like to use lazy
+            loading, call :meth:`LazyRegularTimeSeries.from_hdf5` instead.
+
         .. code-block:: python
 
             import h5py
@@ -1263,6 +1315,17 @@ class RegularTimeSeries(ArrayDict):
 
 
 class LazyRegularTimeSeries(RegularTimeSeries):
+    r"""Lazy variant of :obj:`RegularTimeSeries`. The data is not loaded until it is
+    accessed. This class is meant to be used when the data is too large to fit in
+    memory, and is intended to be intantiated via.
+    :obj:`LazyRegularTimeSeries.from_hdf5`.
+
+    .. note:: To access an attribute without triggering the in-memory loading use
+        self.__dict__[key] otherwise using self.key or getattr(self, key) will trigger
+        the lazy loading and will automatically convert the h5py dataset to a numpy
+        array as well as apply any outstanding masks.
+    """
+
     _lazy_ops = dict()
 
     def _maybe_first_dim(self):
@@ -1382,14 +1445,15 @@ class LazyRegularTimeSeries(RegularTimeSeries):
 
 class Interval(ArrayDict):
     r"""An interval object is a set of time intervals each defined by a start time and
-    an end time.
+    an end time. For :obj:`Interval`, we do not need to define a domain, since the
+    interval itself is its own domain.
 
     Args:
-        start: an array of start times of shape (N,).
-        end: an array of end times of shape (N,).
+        start: an array of start times of shape (N,) or a float.
+        end: an array of end times of shape (N,) or a float.
         timekeys: a list of strings that specify which attributes are time-based
             attributes.
-        **kwargs: arrays that shares the same first dimension.
+        **kwargs: arrays that shares the same first dimension N.
 
     .. code-block:: python
 
@@ -1415,10 +1479,10 @@ class Interval(ArrayDict):
         intervals.keys
         >>> ['start', 'end', 'go_cue_time', 'drifting_gratings_dir']
 
-        intervals.sorted
+        intervals.is_sorted()
         >>> True
 
-        intervals.disjoint
+        intervals.is_disjoint()
         >>> True
 
         intervals.slice(0.5, 2.5)
@@ -1429,18 +1493,12 @@ class Interval(ArrayDict):
             drifting_gratings_dir=[2]
         )
 
-    :obj:`Interval` objects can be indexed with a binary mask, which will return a new
-    :obj:`Interval` object with the selected elements and their corresponding attributes.
+        Interval(0., 1.)
+        >>> Interval(
+            start=[1],
+            end=[1]
+        )
 
-    .. code-block:: python
-
-            intervals[[True, False, True]]
-            >>> Interval(
-                start=[2],
-                end=[2],
-                go_cue_time=[2],
-                drifting_gratins_dir=[2]
-            )
     """
 
     _sorted = None
@@ -1565,7 +1623,12 @@ class Interval(ArrayDict):
 
     def dilate(self, size: float):
         r"""Dilates the intervals by a given size. The dilation is performed in both
-        directions.
+        directions. This operation is designed to not create overlapping intervals,
+        meaning for a given interval and a given direction, dilation will stop if
+        another interval is too close. If distance between two intervals is less than
+        :obj:`size`, both of them will dilate until they meet halfway but will never
+        overlap. You can think of dilation as inflating ballons that will never merge,
+        and will stop each other from moving too far.
 
         Args:
             size: The size of the dilation.
@@ -1706,7 +1769,7 @@ class Interval(ArrayDict):
     ):
         """Adds a boolean mask as an array attribute, which is defined for each
         interval in the object, and is set to :obj:`True` if the interval intersects
-        with the provided :obj:`interval` object. The mask attribute will be called
+        with the provided :obj:`Interval` object. The mask attribute will be called
         :obj:`<name>_mask`.
 
         This is used to mark intervals as part of train, validation,
@@ -1750,6 +1813,18 @@ class Interval(ArrayDict):
             start: Start time.
             end: End time.
             steps: Number of samples.
+
+        .. code-block:: python
+
+            from kirby.data import Interval
+
+            interval = Interval.linspace(0., 10., 100)
+
+            interval
+            >>> Interval(
+                start=[100],
+                end=[100]
+                )
         """
         timestamps = np.linspace(start, end, steps + 1)
         return cls(
@@ -1853,6 +1928,10 @@ class Interval(ArrayDict):
 
         Args:
             file (h5py.File): HDF5 file.
+
+        .. note::
+            This method will load all data in memory, if you would like to use lazy
+            loading, call :meth:`LazyInterval.from_hdf5` instead.
 
         .. code-block:: python
 
@@ -1990,6 +2069,16 @@ class Interval(ArrayDict):
 
 
 class LazyInterval(Interval):
+    r"""Lazy variant of :obj:`Interval`. The data is not loaded until it is accessed.
+    This class is meant to be used when the data is too large to fit in memory, and
+    is intended to be intantiated via. :obj:`LazyInterval.from_hdf5`.
+
+    .. note:: To access an attribute without triggering the in-memory loading use
+        self.__dict__[key] otherwise using self.key or getattr(self, key) will trigger
+        the lazy loading and will automatically convert the h5py dataset to a numpy
+        array as well as apply any outstanding masks.
+    """
+
     _lazy_ops = dict()
     _unicode_keys = []
 
@@ -2270,17 +2359,17 @@ class Data(object):
         )
 
         data = Data(
-            start=0.0,
-            end=4.0,
             session_id="session_0",
             spikes=IrregularTimeSeries(
                 timestamps=np.array([0.1, 0.2, 0.3, 2.1, 2.2, 2.3]),
                 unit_index=np.array([0, 0, 1, 0, 1, 2]),
                 waveforms=np.zeros((6, 48)),
+                domain=Interval(0., 3.),
             ),
             lfp=RegularTimeSeries(
                 raw=np.zeros((1000, 3)),
                 sampling_rate=250.,
+                domain=Interval(0., 4.),
             ),
             units=ArrayDict(
                 id=np.array(["unit_0", "unit_1", "unit_2"]),
@@ -2293,12 +2382,11 @@ class Data(object):
                 drifting_gratings_dir=np.array([0, 45, 90]),
             ),
             drifting_gratings_imgs=np.zeros((8, 3, 32, 32)),
+            domain=Interval(0., 4.),
         )
 
         data
         >>> Data(
-            start=0.0,
-            end=4.0,
             session_id='session_0',
             spikes=IrregularTimeSeries(
                 timestamps=[6],
@@ -2319,17 +2407,19 @@ class Data(object):
                 drifting_gratings_dir=[3]
             ),
             drifting_gratings_imgs=[8, 3, 32, 32]
+            _domain=Interval(
+                start=[1],
+                end=[1]
+            ),
         )
 
         data.slice(1, 3)
         >>> Data(
-            start=0.,
-            end=2.,
             session_id='session_0',
             spikes=IrregularTimeSeries(
-                timestamps=[4],
-                unit_index=[4],
-                waveforms=[4, 48]
+                timestamps=[3],
+                unit_index=[3],
+                waveforms=[3, 48]
             ),
             lfp=RegularTimeSeries(
                 raw=[500, 3]
@@ -2344,8 +2434,13 @@ class Data(object):
                 go_cue_time=[2],
                 drifting_gratings_dir=[2]
             ),
-            drifting_gratings_imgs=[8, 3, 32, 32]
-        )
+            drifting_gratings_imgs=[8, 3, 32, 32],
+            _domain=Interval(
+                start=[1],
+                end=[1]
+            ),
+            _absolute_start=1.0,
+            )
     """
 
     _absolute_start = 0.0
@@ -2390,7 +2485,7 @@ class Data(object):
     @property
     def absolute_start(self):
         r"""Returns the start time of this slice relative to the original start time.
-        Would be 0 if the data object has not been sliced.
+        Should be 0. if the data object has not been sliced.
 
         .. code-block:: python
 
@@ -2439,6 +2534,7 @@ class Data(object):
         return out
 
     def __repr__(self) -> str:
+        # TODO hide _domain
         cls = self.__class__.__name__
 
         info = ""
@@ -2487,6 +2583,8 @@ class Data(object):
                 # there is no partial I/O; the entire attribute must be read
                 file.attrs[key] = value
 
+        # TODO save _absolute_start
+
         if self._domain is not None:
             grp = file.create_group("domain")
             self._domain.to_hdf5(grp)
@@ -2502,6 +2600,11 @@ class Data(object):
 
         Args:
             file (h5py.File): HDF5 file.
+
+        .. note::
+            This method will load all data in memory, if you would like to use lazy
+            loading, call :meth:`LazyData.from_hdf5` instead.
+
 
         .. code-block:: python
 
