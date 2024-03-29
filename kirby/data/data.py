@@ -1340,9 +1340,12 @@ class LazyRegularTimeSeries(RegularTimeSeries):
 
             if "slice" in self._lazy_ops:
                 # TODO add more constraints to the domain in RegularTimeSeries
+
+                # TODO it is always better to resolve another attribute before timestamps
+                # this is because we are dealing with numerical noise
                 # we know the domain and the sampling rate, we can infer the number of pts
                 return int(
-                    np.floor(
+                    np.round(
                         (self.domain.end[-1] - self.domain.start[0])
                         * self.sampling_rate
                     )
