@@ -44,6 +44,26 @@ def test_linspace():
     )
 
 
+def test_arange():
+    result = Interval.arange(0.0, 1.0, 0.1)
+    expected = Interval(np.arange(0, 1.0, 0.1), np.arange(0.1, 1.1, 0.1))
+    assert np.allclose(result.start, expected.start) and np.allclose(
+        result.end, expected.end
+    )
+
+    result = Interval.arange(0.0, 1.0, 0.3)
+    expected = Interval(np.array([0.0, 0.3, 0.6, 0.9]), np.array([0.3, 0.6, 0.9, 1.0]))
+    assert np.allclose(result.start, expected.start) and np.allclose(
+        result.end, expected.end
+    )
+
+    result = Interval.arange(0.0, 1.0, 0.3, include_end=False)
+    expected = Interval(np.array([0.0, 0.3, 0.6]), np.array([0.3, 0.6, 0.9]))
+    assert np.allclose(result.start, expected.start) and np.allclose(
+        result.end, expected.end
+    )
+
+
 def test_split():
     interval = Interval.linspace(0, 1, 10)
 

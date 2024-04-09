@@ -1836,6 +1836,30 @@ class Interval(ArrayDict):
         )
 
     @classmethod
+    def arange(cls, start: float, end: float, step: float, include_end: bool = True):
+        r"""Create a grid of intervals with a given step size. If the last step cannot
+        reach the end time, a smaller interval will be added, it will stop at the end
+        time, and will be shorter than obj:`step`. This behavior can be
+        changed by setting `include_end` to :obj:`False`.
+
+        Args:
+            start: Start time.
+            end: End time.
+            step: Step size.
+            include_end: Whether to include a partial interval at the end.
+        """
+        whole_steps = np.floor((end - start) / step).astype(int)
+        timestamps = np.linspace(start, start + whole_steps * step, whole_steps + 1)
+
+        if include_end and timestamps[-1] < end:
+            timestamps = np.append(timestamps, end)
+
+        return cls(
+            start=timestamps[:-1],
+            end=timestamps[1:],
+        )
+
+    @classmethod
     def from_dataframe(cls, df: pd.DataFrame, unsigned_to_long: bool = True):
         r"""Create an :obj:`Interval` object from a pandas DataFrame. The dataframe
         must have a start time and end time columns. The names of these columns need
