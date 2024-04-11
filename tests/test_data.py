@@ -1,5 +1,6 @@
 import pytest
 import os
+import copy
 import h5py
 import numpy as np
 import pandas as pd
@@ -793,3 +794,126 @@ def test_data():
 
     data = data.slice(0.4, 1.4)
     assert data.absolute_start == 1.4
+
+
+def test_data_copy():
+    data = Data(
+        session_id="session_0",
+        domain=Interval.from_list([(0, 3)]),
+        some_numpy_array=np.array([1, 2, 3]),
+        spikes=IrregularTimeSeries(
+            timestamps=np.array([0.1, 0.2, 0.3, 2.1, 2.2, 2.3]),
+            unit_index=np.array([0, 0, 1, 0, 1, 2]),
+            waveforms=np.zeros((6, 48)),
+            domain="auto",
+        ),
+        lfp=RegularTimeSeries(
+            raw=np.zeros((1000, 3)),
+            sampling_rate=250.0,
+            domain="auto",
+        ),
+        units=ArrayDict(
+            id=np.array(["unit_0", "unit_1", "unit_2"]),
+            brain_region=np.array(["M1", "M1", "PMd"]),
+        ),
+        trials=Interval(
+            start=np.array([0, 1, 2]),
+            end=np.array([1, 2, 3]),
+            go_cue_time=np.array([0.5, 1.5, 2.5]),
+            drifting_gratings_dir=np.array([0, 45, 90]),
+        ),
+        drifting_gratings_imgs=np.zeros((8, 3, 32, 32)),
+    )
+
+    ### test copy
+    data_copy = copy.copy(data)
+    data_copy.some_numpy_array[0] = 10
+    # this is a shallow copy, so the original object should be modified
+    assert data.some_numpy_array[0] == 10
+
+    data_copy.spikes.unit_index[0] = 2
+    # this is a shallow copy, so the original object should be modified
+    assert data.spikes.unit_index[0] == 2
+
+    data_copy.spikes.unit_index = np.array([0, 0, 0, 0, 0, 0])
+    # the unit_index variable is not shared between the two objects
+    assert data.spikes.unit_index[0] == 2
+
+    ### test deepcopy
+    data_deepcopy = copy.deepcopy(data)
+    data_deepcopy.some_numpy_array[1] = 20
+    # this is a deep copy, so the original object should not be modified
+    assert data.some_numpy_array[1] == 2
+
+    data_deepcopy.spikes.unit_index[1] = 2
+    # this is a deep copy, so the original object should not be modified
+    assert data.spikes.unit_index[1] == 0
+
+
+def test_lazy_data_copy(test_filepath):
+    data = Data(
+        session_id="session_0",
+        domain=Interval.from_list([(0, 3)]),
+        some_numpy_array=np.array([1, 2, 3]),
+        spikes=IrregularTimeSeries(
+            timestamps=np.array([0.1, 0.2, 0.3, 2.1, 2.2, 2.3]),
+            unit_index=np.array([0, 0, 1, 0, 1, 2]),
+            waveforms=np.zeros((6, 48)),
+            domain="auto",
+        ),
+        lfp=RegularTimeSeries(
+            raw=np.zeros((1000, 3)),
+            sampling_rate=250.0,
+            domain="auto",
+        ),
+        units=ArrayDict(
+            id=np.array(["unit_0", "unit_1", "unit_2"]),
+            brain_region=np.array(["M1", "M1", "PMd"]),
+        ),
+        trials=Interval(
+            start=np.array([0, 1, 2]),
+            end=np.array([1, 2, 3]),
+            go_cue_time=np.array([0.5, 1.5, 2.5]),
+            drifting_gratings_dir=np.array([0, 45, 90]),
+        ),
+        drifting_gratings_imgs=np.zeros((8, 3, 32, 32)),
+    )
+
+    with h5py.File(test_filepath, "w") as f:
+        data.to_hdf5(f)
+
+    del data
+
+    with h5py.File(test_filepath, "r") as f:
+        data = Data.from_hdf5(f, lazy=True)
+        assert isinstance(data.spikes.__dict__["unit_index"], h5py.Dataset)
+
+        # this will copy all references to any h5py datasets
+        data_copy = copy.copy(data)
+        data_copy.some_numpy_array[0] = 10
+        # TODO Data does not lazy load numpy arrays that are not wrapped in an
+        # ArrayDict object, this will change in the future.
+        # because some_numpy_array is not a h5py dataset, changing it will affect
+        # the original object
+        assert isinstance(data.__dict__["some_numpy_array"], np.ndarray)
+        # this is a shallow copy, so the original object should be modified
+        assert data.some_numpy_array[0] == 10
+
+        assert isinstance(data.spikes.__dict__["unit_index"], h5py.Dataset)
+        data_copy.spikes.unit_index[0] = 2
+        assert isinstance(data.spikes.__dict__["unit_index"], h5py.Dataset)
+        # this is a shallow copy, but the unit_index is a h5py dataset, so
+        # the original object will not be modified
+        assert data.spikes.unit_index[0] == 0
+
+    with h5py.File(test_filepath, "r") as f:
+        data = Data.from_hdf5(f, lazy=True)
+
+        data_deepcopy = copy.deepcopy(data)
+        data_deepcopy.some_numpy_array[0] = 10
+        # this is a deep copy, so the original object should not be modified
+        assert data.some_numpy_array[0] == 1
+
+        data_deepcopy.spikes.unit_index[0] = 2
+        # this is a deep copy, so the original object should not be modified
+        assert data.spikes.unit_index[0] == 0

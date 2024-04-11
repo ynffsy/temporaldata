@@ -309,6 +309,26 @@ class ArrayDict(object):
 
         return obj
 
+    def __copy__(self):
+        # create a shallow copy of the object
+        cls = self.__class__
+        result = cls.__new__(cls)
+        result.__dict__.update(self.__dict__)
+        return result
+
+    def __deepcopy__(self, memo):
+        # create a deep copy of the object
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        for k, v in self.__dict__.items():
+            if isinstance(v, h5py.Dataset):
+                # h5py.File objects cannot be deepcopied
+                result.__dict__[k] = v
+            else:
+                result.__dict__[k] = copy.deepcopy(v, memo)
+        return result
+
 
 class LazyArrayDict(ArrayDict):
     r"""Lazy variant of :obj:`ArrayDict`. The data is not loaded until it is accessed.
@@ -2641,6 +2661,9 @@ class Data(object):
             with h5py.File("data.h5", "r") as f:
                 data = Data.from_hdf5(f)
         """
+        # check that the file is read-only
+        assert file.mode == "r", "File must be opened in read-only mode."
+
         data = {}
         for key, value in file.items():
             if isinstance(value, h5py.Group):
@@ -2720,6 +2743,35 @@ class Data(object):
                     f"Could not resolve {path} in data (specifically, at level {c}))"
                 )
         return out
+
+    def __copy__(self):
+        # create a shallow copy of the object
+        # the full skeleton of the Data object, i.e. including all ArrayDict children,
+        # will be copied. However, the data itself (np.ndarray, etc.) will not be
+        # copied.
+        cls = self.__class__
+        result = cls.__new__(cls)
+        for k, v in self.__dict__.items():
+            if isinstance(v, ArrayDict):
+                setattr(result, k, copy.copy(v))
+            else:
+                setattr(result, k, v)
+        return result
+
+    def __deepcopy__(self, memo):
+        # create a deep copy of the object
+        # h5py objects will not be deepcopied, we only allow read-only access to the
+        # HDF5 file, so this should not be an issue.
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        for k, v in self.__dict__.items():
+            if isinstance(v, h5py.Dataset):
+                # h5py.File objects cannot be deepcopied
+                setattr(result, k, v)
+            else:
+                setattr(result, k, copy.deepcopy(v, memo))
+        return result
 
 
 def size_repr(key: Any, value: Any, indent: int = 0) -> str:
