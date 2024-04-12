@@ -1670,6 +1670,38 @@ class Interval(ArrayDict):
         out.end[-1] = out.end[-1] + size
         return out
 
+    def coalesce(self, eps=1e-6):
+        r"""Coalesces the intervals that are closer than :obj:`eps`. This operation
+        returns a new :obj:`Interval` object, and does not resolve the existing
+        attributes.
+
+        Args:
+            eps: The distance threshold for coalescing the intervals. Defaults to 1e-6.
+        """
+        if not self.is_sorted():
+            self.sort()
+
+        start = []
+        end = []
+
+        current_start = self.start[0]
+        current_end = self.end[0]
+
+        for s, e in zip(self.start[1:], self.end[1:]):
+            if s - current_end < eps:
+                # we have an overlap
+                current_end = e
+            else:
+                start.append(current_start)
+                end.append(current_end)
+                current_start = s
+                current_end = e
+
+        start.append(current_start)
+        end.append(current_end)
+
+        return Interval(start=np.array(start), end=np.array(end))
+
     def difference(self, other):
         r"""Returns the difference between two sets of intervals. The intervals are
         redefined as to not intersect with any interval in :obj:`other`.
