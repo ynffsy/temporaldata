@@ -2527,16 +2527,16 @@ class Data(object):
     def __init__(
         self,
         *,
-        domain,
+        domain=None,
         **kwargs: Dict[str, Union[str, float, int, np.ndarray, ArrayDict]],
     ):
-        for key, value in kwargs.items():
-            setattr(self, key, value)
-
         if domain == "auto":
             domain = ...  # TODO: join all existing domains
 
         self._domain = domain
+
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
         # these variables will hold the original start and end times
         # and won't be modified when slicing
@@ -2546,6 +2546,24 @@ class Data(object):
         # if any time-based attribute is present, start and end must be specified
         # todo check domain, also check when a new attribute is set
 
+    def __setattr__(self, name, value):
+        if name != "_domain" and (
+            (
+                isinstance(value, (IrregularTimeSeries, RegularTimeSeries, Interval))
+                and self.domain is None
+            )
+            or (
+                isinstance(value, Data)
+                and self.domain is None
+                and value.domain is not None
+            )
+        ):
+            raise ValueError(
+                f"Data object must have a domain if it contains a time-based attribute "
+                f"({name})."
+            )
+        super().__setattr__(name, value)
+
     @property
     def domain(self):
         r"""Returns the domain of the data object."""
@@ -2554,12 +2572,12 @@ class Data(object):
     @property
     def start(self):
         r"""Returns the start time of the data object."""
-        return self._domain.start[0]
+        return self.domain.start[0] if self.domain is not None else None
 
     @property
     def end(self):
         r"""Returns the end time of the data object."""
-        return self._domain.end[-1]
+        return self.domain.end[-1] if self.domain is not None else None
 
     @property
     def absolute_start(self):
@@ -2580,7 +2598,7 @@ class Data(object):
             data.absolute_start
             >>> 1.4
         """
-        return self._absolute_start
+        return self._absolute_start if self.domain is not None else None
 
     def slice(self, start: float, end: float):
         r"""Returns a new :obj:`Data` object that contains the data between the start
@@ -2591,12 +2609,19 @@ class Data(object):
             start: Start time.
             end: End time.
         """
+        if self.domain is None:
+            raise ValueError(
+                "Data object does not contain any time-based attributes, "
+                "and can thus not be sliced."
+            )
+
         out = self.__class__.__new__(self.__class__)
 
         for key, value in self.__dict__.items():
             # todo update domain
-            if key != "_domain" and isinstance(
-                value, (Data, IrregularTimeSeries, RegularTimeSeries, Interval)
+            if key != "_domain" and (
+                isinstance(value, (IrregularTimeSeries, RegularTimeSeries, Interval))
+                or (isinstance(value, Data) and value.domain is not None)
             ):
                 out.__dict__[key] = value.slice(start, end)
             else:
@@ -2694,13 +2719,14 @@ class Data(object):
                 data = Data.from_hdf5(f)
         """
         # check that the file is read-only
-        assert file.mode == "r", "File must be opened in read-only mode."
+        if isinstance(file, h5py.File):
+            assert file.mode == "r", "File must be opened in read-only mode."
 
         data = {}
         for key, value in file.items():
             if isinstance(value, h5py.Group):
                 class_name = value.attrs["object"]
-                if lazy:
+                if lazy and class_name != "Data":
                     group_cls = globals()[f"Lazy{class_name}"]
                 else:
                     group_cls = globals()[class_name]
@@ -2708,6 +2734,11 @@ class Data(object):
             else:
                 # if array, it will be loaded no matter what, always prefer ArrayDict
                 data[key] = value[:]
+
+        for key, value in file.attrs.items():
+            if key == "object":
+                continue
+            data[key] = value
 
         obj = cls(**data)
         return obj

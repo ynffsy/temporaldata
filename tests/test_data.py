@@ -917,3 +917,62 @@ def test_lazy_data_copy(test_filepath):
         data_deepcopy.spikes.unit_index[0] = 2
         # this is a deep copy, so the original object should not be modified
         assert data.spikes.unit_index[0] == 0
+
+
+def test_timeless_data(test_filepath):
+    # when defining a Data object that has no time-based attributes, we do no need to
+    # specify a domain
+    subject = Data(
+        id="jenkins",
+        age=5.0,
+        species="HUMAN",
+        description="À89!ÜÞ",
+        image=np.ones((32, 32, 3)),
+    )
+
+    # we cannot slice this object because it has no domain or time-based attributes
+    with pytest.raises(ValueError):
+        subject.slice(0.1, 0.2)
+
+    with h5py.File(test_filepath, "w") as f:
+        subject.to_hdf5(f)
+
+    with h5py.File(test_filepath, "r") as f:
+        data = Data.from_hdf5(f)
+
+        assert data.id == "jenkins"
+        assert data.age == 5.0
+        assert data.species == "HUMAN"
+        assert data.description == "À89!ÜÞ"
+
+        # TODO(mehdi) image is a numpy array so it should be lazy loaded
+        # assert isinstance(data.__dict__["image"], h5py.Dataset)
+        assert np.allclose(data.image, np.ones((32, 32, 3)))
+
+    data = Data(
+        subject=subject,
+        spikes=IrregularTimeSeries(
+            timestamps=np.array([0.1, 0.2, 0.3, 2.1, 2.2, 2.3]),
+            unit_index=np.array([0, 0, 1, 0, 1, 2]),
+            waveforms=np.zeros((6, 48)),
+            domain="auto",
+        ),
+        domain=Interval(0.0, 3.0),
+    )
+
+    with h5py.File(test_filepath, "w") as f:
+        data.to_hdf5(f)
+
+    with h5py.File(test_filepath, "r") as f:
+        data = Data.from_hdf5(f)
+
+        assert data.subject.id == "jenkins"
+        assert data.subject.age == 5.0
+        assert data.subject.species == "HUMAN"
+        assert np.allclose(data.subject.image, np.ones((32, 32, 3)))
+
+        assert len(data.spikes) == 6
+        assert np.allclose(
+            data.spikes.timestamps, np.array([0.1, 0.2, 0.3, 2.1, 2.2, 2.3])
+        )
+        assert np.allclose(data.spikes.unit_index, np.array([0, 0, 1, 0, 1, 2]))
