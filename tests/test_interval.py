@@ -311,3 +311,25 @@ def easy_check(I1, I2, Iexp, op):
 def easy_symmetric_check(I1, I2, Iexp, op):
     easy_check(I1, I2, Iexp, op)
     easy_check(I2, I1, Iexp, op)
+
+
+def test_dilate():
+    data = Interval(np.array([1.0, 5.0, 11.0]), np.array([2.0, 7.0, 12.0]))
+
+    result = data.dilate(0.5)
+    expected = Interval(np.array([0.5, 4.5, 10.5]), np.array([2.5, 7.5, 12.5]))
+    assert np.allclose(result.start, expected.start) and np.allclose(
+        result.end, expected.end
+    )
+
+    result = data.dilate(4.0)
+    expected = Interval(np.array([-3.0, 3.5, 9.0]), np.array([3.5, 9.0, 16.0]))
+    assert np.allclose(result.start, expected.start) and np.allclose(
+        result.end, expected.end
+    )
+
+    result = data.dilate(4.0, max_len=2.0)
+    expected = Interval(np.array([0.5, 5.0, 10.5]), np.array([2.5, 7.0, 12.5]))
+    assert np.allclose(result.start, expected.start) and np.allclose(
+        result.end, expected.end
+    )

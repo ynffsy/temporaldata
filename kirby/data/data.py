@@ -1644,7 +1644,7 @@ class Interval(ArrayDict):
         out._sorted = self._sorted
         return out
 
-    def dilate(self, size: float):
+    def dilate(self, size: float, max_len=None):
         r"""Dilates the intervals by a given size. The dilation is performed in both
         directions. This operation is designed to not create overlapping intervals,
         meaning for a given interval and a given direction, dilation will stop if
@@ -1655,19 +1655,34 @@ class Interval(ArrayDict):
 
         Args:
             size: The size of the dilation.
+            max_len: Dilation will not exceed this maximum length. For intervals that
+                are already longer than :obj:`max_len`, there will be no dilation. By
+                default, there is no maximum length.
         """
-        out = self.__class__.__new__(self.__class__)
-        out._timekeys = self._timekeys
-        out._sorted = self._sorted
-        for key in self.keys:
-            out.__dict__[key] = self.__dict__[key].copy()
+        out = copy.deepcopy(self)
+
+        dilation_size = size
+        size = np.full_like(out.start, dilation_size)
+        if max_len is not None:
+            interval_len = out.end - out.start
+            size = np.minimum(size, (max_len - interval_len) / 2)
+            size = np.clip(size, 0, None)
 
         half_way = (self.end[:-1] + self.start[1:]) / 2
 
-        out.start[0] = out.start[0] - size
-        out.start[1:] = np.maximum(out.start[1:] - size, half_way)
-        out.end[:-1] = np.minimum(self.end[:-1] + size, half_way)
-        out.end[-1] = out.end[-1] + size
+        # TODO(mehdi) should check that this does not violate domain
+        out.start[0] = out.start[0] - size[0]
+        out.start[1:] = np.maximum(out.start[1:] - size[1:], half_way)
+
+        # update size
+        size = np.full_like(out.start, dilation_size)
+        if max_len is not None:
+            interval_len = out.end - out.start
+            size = np.minimum(size, (max_len - interval_len))
+            size = np.clip(size, 0, None)
+
+        out.end[:-1] = np.minimum(self.end[:-1] + size[:-1], half_way)
+        out.end[-1] = out.end[-1] + size[-1]
         return out
 
     def coalesce(self, eps=1e-6):
