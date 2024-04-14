@@ -337,6 +337,63 @@ def test_irregular_timeseries_slice():
     assert data.domain.end[0] == 0.45
 
 
+def test_irregular_timeseries_select_by_interval():
+    data = IrregularTimeSeries(
+        unit_index=np.array([0, 0, 1, 0, 1, 2]),
+        timestamps=np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6]),
+        waveforms=np.zeros((6, 48)),
+        timekeys=["timestamps"],
+        domain="auto",
+    )
+
+    selection_interval = Interval(
+        start=np.array([0.2, 0.5]),
+        end=np.array([0.4, 0.6]),
+    )
+    data = data.select_by_interval(selection_interval)
+
+    assert len(data) == 3
+    assert np.allclose(data.timestamps, np.array([0.2, 0.3, 0.5]))
+    assert np.allclose(data.unit_index, np.array([0, 1, 1]))
+
+    assert len(data.domain) == 2
+    assert np.allclose(data.domain.start, selection_interval.start)
+    assert np.allclose(data.domain.end, selection_interval.end)
+
+
+def test_irregular_timeseries_lazy_select_by_interval(test_filepath):
+    data = IrregularTimeSeries(
+        unit_index=np.array([0, 0, 1, 0, 1, 2]),
+        timestamps=np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6]),
+        values=np.array([0, 1, 2, 3, 4, 5]),
+        waveforms=np.zeros((6, 48)),
+        timekeys=["timestamps"],
+        domain="auto",
+    )
+
+    with h5py.File(test_filepath, "w") as f:
+        data.to_hdf5(f)
+
+    del data
+
+    with h5py.File(test_filepath, "r") as f:
+        data = LazyIrregularTimeSeries.from_hdf5(f)
+
+        selection_interval = Interval(
+            start=np.array([0.2, 0.5]),
+            end=np.array([0.4, 0.6]),
+        )
+        data = data.select_by_interval(selection_interval)
+
+        assert len(data) == 3
+        assert np.allclose(data.timestamps, np.array([0.2, 0.3, 0.5]))
+        assert np.allclose(data.unit_index, np.array([0, 1, 1]))
+
+        assert len(data.domain) == 2
+        assert np.allclose(data.domain.start, selection_interval.start)
+        assert np.allclose(data.domain.end, selection_interval.end)
+
+
 def test_irregular_timeseries_sortedness():
     a = IrregularTimeSeries(np.array([0.0, 1.0, 2.0]), domain="auto")
     assert a.is_sorted()

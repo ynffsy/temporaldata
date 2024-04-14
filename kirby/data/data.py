@@ -686,6 +686,24 @@ class IrregularTimeSeries(ArrayDict):
         out._sorted = self._sorted
         return out
 
+    def select_by_interval(self, interval: Interval):
+        r"""Return a new :obj:`IrregularTimeSeries` object where all timestamps are
+        within the interval.
+
+        Args:
+            interval: Interval object.
+        """
+        idx_l = np.searchsorted(self.timestamps, interval.start)
+        idx_r = np.searchsorted(self.timestamps, interval.end)
+
+        mask = np.zeros(len(self), dtype=bool)
+        for i in range(len(interval)):
+            mask[idx_l[i] : idx_r[i]] = True
+
+        out = self.select_by_mask(mask)
+        out._domain = out._domain & interval
+        return out
+
     def add_split_mask(self, name: str, interval: Interval):
         """Adds a boolean mask as an array attribute, which is defined for each
         timestamp, and is set to :obj:`True` for all timestamps that are within
