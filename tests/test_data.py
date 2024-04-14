@@ -294,11 +294,47 @@ def test_irregular_timeseries_slice():
     assert np.allclose(data.timestamps, np.array([0.0, 0.1, 0.2]))
     assert np.allclose(data.unit_index, np.array([0, 1, 0]))
 
+    assert len(data.domain) == 1
+    assert data.domain.start[0] == 0.0
+    assert data.domain.end[0] == 0.3
+
     data = data.slice(0.05, 0.25)
 
     assert len(data) == 2
     assert np.allclose(data.timestamps, np.array([0.05, 0.15]))
     assert np.allclose(data.unit_index, np.array([1, 0]))
+
+    assert len(data.domain) == 1
+    assert data.domain.start[0] == 0.0
+    assert data.domain.end[0] == 0.2
+
+    data = IrregularTimeSeries(
+        unit_index=np.array([0, 0, 1, 0, 1, 2]),
+        timestamps=np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6]),
+        waveforms=np.zeros((6, 48)),
+        timekeys=["timestamps"],
+        domain="auto",
+    )
+
+    data = data.slice(0.2, 0.5, reset_origin=False)
+
+    assert len(data) == 3
+    assert np.allclose(data.timestamps, np.array([0.2, 0.3, 0.4]))
+    assert np.allclose(data.unit_index, np.array([0, 1, 0]))
+
+    assert len(data.domain) == 1
+    assert data.domain.start[0] == 0.2
+    assert data.domain.end[0] == 0.5
+
+    data = data.slice(0.25, 0.45, reset_origin=False)
+
+    assert len(data) == 2
+    assert np.allclose(data.timestamps, np.array([0.3, 0.4]))
+    assert np.allclose(data.unit_index, np.array([1, 0]))
+
+    assert len(data.domain) == 1
+    assert data.domain.start[0] == 0.25
+    assert data.domain.end[0] == 0.45
 
 
 def test_irregular_timeseries_sortedness():
@@ -529,6 +565,38 @@ def test_lazy_regular_timeseries(test_filepath):
 
         assert np.allclose(data.timestamps, np.arange(0.0, 2.0, 1 / 250.0))
 
+    with h5py.File(test_filepath, "r") as f:
+        data = LazyRegularTimeSeries.from_hdf5(f)
+        data = data.slice(1.0, 3.0, reset_origin=False)
+
+        # timestamps is a property not an attribute, make sure it's defined properly
+        # even if no other attribute is loaded
+        assert len(data.timestamps) == 500
+
+        assert np.allclose(data.timestamps, np.arange(1.0, 3.0, 1 / 250.0))
+
+        data = data.slice(1.0, 2.0, reset_origin=True)
+        assert len(data.timestamps) == 250
+        assert np.allclose(data.timestamps, np.arange(0.0, 1.0, 1 / 250.0))
+
+        assert np.allclose(data.gamma, gamma[250:500])
+
+        data = LazyRegularTimeSeries.from_hdf5(f)
+        data = data.slice(1.0, 3.0, reset_origin=False)
+        data = data.slice(1.0, 2.0, reset_origin=True)
+
+        assert len(data.timestamps) == 250
+        assert np.allclose(data.timestamps, np.arange(0.0, 1.0, 1 / 250.0))
+        assert np.allclose(data.gamma, gamma[250:500])
+
+        data = LazyRegularTimeSeries.from_hdf5(f)
+        timestamps = data.timestamps
+        assert isinstance(timestamps, np.ndarray)
+        data = data.slice(1.0, 3.0, reset_origin=False)
+
+        assert len(data.timestamps) == 500
+        assert np.allclose(data.timestamps, np.arange(1.0, 3.0, 1 / 250.0))
+
 
 def test_regular_to_irregular_timeseries():
     a = RegularTimeSeries(
@@ -602,6 +670,30 @@ def test_interval_slice():
     assert np.allclose(data.drifting_gratings_dir, np.array([90, 45, 180, 90]))
 
     data = data.slice(0.0, 2.0)
+
+    assert len(data) == 2
+    assert np.allclose(data.start, np.array([0, 1]))
+    assert np.allclose(data.end, np.array([1, 2]))
+    assert np.allclose(data.go_cue_time, np.array([0.5, 1.5]))
+    assert np.allclose(data.drifting_gratings_dir, np.array([90, 45]))
+
+    data = Interval(
+        start=np.array([0, 1, 2, 3, 4, 5, 6, 7, 8]),
+        end=np.array([1, 2, 3, 4, 5, 6, 7, 8, 9]),
+        go_cue_time=np.array([0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5]),
+        drifting_gratings_dir=np.array([0, 45, 90, 45, 180, 90, 0, 90, 45]),
+        timekeys=["start", "end", "go_cue_time"],
+    )
+
+    data = data.slice(2.0, 6.0, reset_origin=False)
+
+    assert len(data) == 4
+    assert np.allclose(data.start, np.array([2, 3, 4, 5]))
+    assert np.allclose(data.end, np.array([3, 4, 5, 6]))
+    assert np.allclose(data.go_cue_time, np.array([2.5, 3.5, 4.5, 5.5]))
+    assert np.allclose(data.drifting_gratings_dir, np.array([90, 45, 180, 90]))
+
+    data = data.slice(2.0, 4.0, reset_origin=True)
 
     assert len(data) == 2
     assert np.allclose(data.start, np.array([0, 1]))

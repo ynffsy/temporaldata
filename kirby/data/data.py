@@ -631,13 +631,13 @@ class IrregularTimeSeries(ArrayDict):
                 self.__dict__[key] = self.__dict__[key][sorted_indices]
         self._sorted = True
 
-    def slice(self, start: float, end: float):
+    def slice(self, start: float, end: float, reset_origin: bool = True):
         r"""Returns a new :obj:`IrregularTimeSeries` object that contains the data
         between the start and end times. The end time is exclusive, the slice will
         only include data in :math:`[\textrm{start}, \textrm{end})`.
 
-        All time attributes are updated to be relative to the new start time.
-        The domain is also updated accordingly.
+        If :obj:`reset_origin` is :obj:`True`, all time attributes are updated to
+        be relative to the new start time. The domain is also updated accordingly.
 
         .. warning::
             If the time series is not sorted, it will be automatically sorted in place.
@@ -645,6 +645,8 @@ class IrregularTimeSeries(ArrayDict):
         Args:
             start: Start time.
             end: End time.
+            reset_origin: If :obj:`True`, all time attributes will be updated to be
+                relative to the new start time. Defaults to :obj:`True`.
         """
         if not self.is_sorted():
             logging.warning("time series is not sorted, sorting before slicing")
@@ -659,15 +661,17 @@ class IrregularTimeSeries(ArrayDict):
         out._timekeys = self._timekeys
         out._sorted = True  # we know the sequence is sorted
         out._domain = self._domain & Interval(start=start, end=end)
-        out._domain.start = out._domain.start - start
-        out._domain.end = out._domain.end - start
+        if reset_origin:
+            out._domain.start = out._domain.start - start
+            out._domain.end = out._domain.end - start
 
         # array attributes
         for key in self.keys:
             out.__dict__[key] = self.__dict__[key][idx_l:idx_r].copy()
 
-        for key in self._timekeys:
-            out.__dict__[key] = out.__dict__[key] - start
+        if reset_origin:
+            for key in self._timekeys:
+                out.__dict__[key] = out.__dict__[key] - start
         return out
 
     def select_by_mask(self, mask: np.ndarray):
@@ -916,10 +920,12 @@ class LazyIrregularTimeSeries(IrregularTimeSeries):
 
                     # timestamps are resolved and there is a "slice"
                     if "slice" in self._lazy_ops:
-                        idx_l, idx_r, start = self._lazy_ops["slice"]
+                        idx_l, idx_r, start, origin_translation = self._lazy_ops[
+                            "slice"
+                        ]
                         out = out[idx_l:idx_r]
                         if name in self._timekeys:
-                            out = out - start
+                            out = out - origin_translation
 
                     # there could have been masking, so apply it
                     if "mask" in self._lazy_ops:
@@ -991,7 +997,9 @@ class LazyIrregularTimeSeries(IrregularTimeSeries):
         return out
 
     def _resolve_timestamps_after_slice(self):
-        start, end, sequence_start = self._lazy_ops["unresolved_slice"]
+        start, end, sequence_start, origin_translation = self._lazy_ops[
+            "unresolved_slice"
+        ]
         # sequence_start: Time corresponding to _timstamps_indices_1s[0]
 
         start_closest_sec_idx = np.clip(
@@ -1018,34 +1026,42 @@ class LazyIrregularTimeSeries(IrregularTimeSeries):
         idx_l = idx_l + idx_dl
 
         del self._lazy_ops["unresolved_slice"]
-        self._lazy_ops["slice"] = (idx_l, idx_r, start)
-        self.__dict__["timestamps"] = timestamps - start
+        self._lazy_ops["slice"] = (idx_l, idx_r, start, origin_translation)
+        self.__dict__["timestamps"] = timestamps - origin_translation
 
-    def slice(self, start: float, end: float):
+    def slice(self, start: float, end: float, reset_origin: bool = True):
         out = self.__class__.__new__(self.__class__)
         out._unicode_keys = self._unicode_keys
         out._lazy_ops = {}
         out._timekeys = self._timekeys
 
         out._domain = self._domain & Interval(start=start, end=end)
-        out._domain.start = out._domain.start - start
-        out._domain.end = out._domain.end - start
+        if reset_origin:
+            out._domain.start = out._domain.start - start
+            out._domain.end = out._domain.end - start
 
         if isinstance(self.__dict__["timestamps"], h5py.Dataset):
             # lazy loading, we will only resolve timestamps if an attribute is accessed
             assert "slice" not in self._lazy_ops, "slice already exists"
             if "unresolved_slice" not in self._lazy_ops:
-                out._lazy_ops["unresolved_slice"] = (start, end, self._domain.start[0])
+                origin_translation = start if reset_origin else 0.0
+                out._lazy_ops["unresolved_slice"] = (
+                    start,
+                    end,
+                    self._domain.start[0],
+                    origin_translation,
+                )
             else:
                 # for some reason, blind slicing was done twice, and there is no need to
                 # resolve the timestamps again
-                curr_start, curr_end, sequence_start = self._lazy_ops[
-                    "unresolved_slice"
-                ]
+                curr_start, curr_end, sequence_start, origin_translation = (
+                    self._lazy_ops["unresolved_slice"]
+                )
                 out._lazy_ops["unresolved_slice"] = (
-                    curr_start + start,
-                    min(curr_start + end, curr_end),
+                    start + origin_translation,
+                    min(end + origin_translation, curr_end),
                     sequence_start,
+                    origin_translation + (start if reset_origin else 0.0),
                 )
 
             idx_l = idx_r = None
@@ -1062,15 +1078,18 @@ class LazyIrregularTimeSeries(IrregularTimeSeries):
             idx_r = np.searchsorted(timestamps, end)
 
             timestamps = timestamps[idx_l:idx_r]
-            out.__dict__["timestamps"] = timestamps - start
+            out.__dict__["timestamps"] = timestamps - (start if reset_origin else 0.0)
+
+            origin_translation = start if reset_origin else 0.0
 
             if "slice" not in self._lazy_ops:
-                out._lazy_ops["slice"] = (idx_l, idx_r, start)
+                out._lazy_ops["slice"] = (idx_l, idx_r, start, origin_translation)
             else:
                 out._lazy_ops["slice"] = (
                     self._lazy_ops["slice"][0] + idx_l,
                     self._lazy_ops["slice"][0] + idx_r,
                     self._lazy_ops["slice"][2] - start,
+                    self._lazy_ops["slice"][3] + origin_translation,
                 )
 
         for key in self.keys:
@@ -1085,7 +1104,7 @@ class LazyIrregularTimeSeries(IrregularTimeSeries):
                             "to load. This is an edge case that was not handled."
                         )
                     out.__dict__[key] = value[idx_l:idx_r].copy()
-                    if key in self._timekeys:
+                    if reset_origin and key in self._timekeys:
                         out.__dict__[key] = out.__dict__[key] - start
 
         if "mask" in self._lazy_ops:
@@ -1208,7 +1227,7 @@ class RegularTimeSeries(ArrayDict):
     def select_by_mask(self, mask: np.ndarray):
         raise NotImplementedError("Not implemented for RegularTimeSeries.")
 
-    def slice(self, start: float, end: float):
+    def slice(self, start: float, end: float, reset_origin: bool = True):
         r"""Returns a new :obj:`RegularTimeSeries` object that contains the data between
         the start and end times.
         """
@@ -1221,10 +1240,11 @@ class RegularTimeSeries(ArrayDict):
         out = self.__class__.__new__(self.__class__)
         out._sampling_rate = self.sampling_rate
         out._domain = self._domain  # arithmetics go here
-        out._domain.start, out._domain.end = (
-            out._domain.start - start,
-            out._domain.end - start,
-        )
+        if reset_origin:
+            out._domain.start, out._domain.end = (
+                out._domain.start - start,
+                out._domain.end - start,
+            )
 
         for key in self.keys:
             out.__dict__[key] = self.__dict__[key][start_id:end_id].copy()
@@ -1402,7 +1422,7 @@ class LazyRegularTimeSeries(RegularTimeSeries):
                 return out
         return super(LazyRegularTimeSeries, self).__getattribute__(name)
 
-    def slice(self, start: float, end: float):
+    def slice(self, start: float, end: float, reset_origin: bool = True):
         r"""Returns a new :obj:`RegularTimeSeries` object that contains the data between
         the start and end times.
         """
@@ -1413,8 +1433,10 @@ class LazyRegularTimeSeries(RegularTimeSeries):
         out = self.__class__.__new__(self.__class__)
         out._sampling_rate = self.sampling_rate
         out._lazy_ops = {}
-
-        out._domain = Interval(start=np.array([0.0]), end=np.array([end - start]))
+        if reset_origin:
+            out._domain = Interval(start=np.array([0.0]), end=np.array([end - start]))
+        else:
+            out._domain = self._domain & Interval(start=start, end=end)
 
         for key in self.keys:
             if isinstance(self.__dict__[key], h5py.Dataset):
@@ -1602,12 +1624,13 @@ class Interval(ArrayDict):
         if not self.is_disjoint():
             raise ValueError("Intervals must be disjoint.")
 
-    def slice(self, start: float, end: float):
+    def slice(self, start: float, end: float, reset_origin: bool = True):
         r"""Returns a new :obj:`Interval` object that contains the data between the
         start and end times. An interval is included if it has any overlap with the
         slicing window. The end time is exclusive.
 
-        All time attributes are updated to be relative to the new start time.
+        If :obj:`reset_origin` is set to :obj:`True`, all time attributes will be
+        updated to be relative to the new start time.
 
         .. warning::
             If the intervals are not sorted, they will be automatically sorted in place.
@@ -1615,6 +1638,8 @@ class Interval(ArrayDict):
         Args:
             start: Start time.
             end: End time.
+            reset_origin: If :obj:`True`, all time attributes will be updated to be
+                relative to the new start time. Defaults to :obj:`True`.
         """
 
         if not self.is_sorted():
@@ -1632,8 +1657,9 @@ class Interval(ArrayDict):
         for key in self.keys:
             out.__dict__[key] = self.__dict__[key][idx_l:idx_r].copy()
 
-        for key in self._timekeys:
-            out.__dict__[key] = out.__dict__[key] - start
+        if reset_origin:
+            for key in self._timekeys:
+                out.__dict__[key] = out.__dict__[key] - start
         return out
 
     def select_by_mask(self, mask: np.ndarray):
@@ -2196,10 +2222,12 @@ class LazyInterval(Interval):
                     if "unresolved_slice" in self._lazy_ops:
                         self._resolve_start_end_after_slice()
                     if "slice" in self._lazy_ops:
-                        idx_l, idx_r, start = self._lazy_ops["slice"]
+                        idx_l, idx_r, start, origin_translation = self._lazy_ops[
+                            "slice"
+                        ]
                         out = out[idx_l:idx_r]
                         if name in self._timekeys:
-                            out = out - start
+                            out = out - origin_translation
                     if "mask" in self._lazy_ops:
                         out = out[self._lazy_ops["mask"]]
                     if len(self._lazy_ops) == 0:
@@ -2259,7 +2287,7 @@ class LazyInterval(Interval):
         return out
 
     def _resolve_start_end_after_slice(self):
-        start, end = self._lazy_ops["unresolved_slice"]
+        start, end, origin_translation = self._lazy_ops["unresolved_slice"]
 
         # todo confirm sorted
         # assert self.is_sorted()
@@ -2273,16 +2301,17 @@ class LazyInterval(Interval):
         idx_r = np.searchsorted(start_vec, end)
 
         del self._lazy_ops["unresolved_slice"]
-        self._lazy_ops["slice"] = (idx_l, idx_r, start)
-        self.__dict__["start"] = self.__dict__["start"][idx_l:idx_r] - start
-        self.__dict__["end"] = self.__dict__["end"][idx_l:idx_r] - start
+        self._lazy_ops["slice"] = (idx_l, idx_r, start, origin_translation)
+        self.__dict__["start"] = (
+            self.__dict__["start"][idx_l:idx_r] - origin_translation
+        )
+        self.__dict__["end"] = self.__dict__["end"][idx_l:idx_r] - origin_translation
 
-    def slice(self, start: float, end: float):
+    def slice(self, start: float, end: float, reset_origin: bool = True):
         r"""Returns a new :obj:`Interval` object that contains the data between the
         start and end times. An interval is included if it has any overlap with the
         slicing window.
         """
-
         out = self.__class__.__new__(self.__class__)
         out._unicode_keys = self._unicode_keys
         out._lazy_ops = {}
@@ -2290,13 +2319,17 @@ class LazyInterval(Interval):
 
         if isinstance(self.__dict__["start"], h5py.Dataset):
             assert "slice" not in self._lazy_ops, "slice already exists"
+            origin_translation = start if reset_origin else 0.0
             if "unresolved_slice" not in self._lazy_ops:
-                out._lazy_ops["unresolved_slice"] = (start, end)
+                out._lazy_ops["unresolved_slice"] = (start, end, origin_translation)
             else:
-                curr_start, _ = self._lazy_ops["unresolved_slice"]
+                curr_start, _, curr_origin_translation = self._lazy_ops[
+                    "unresolved_slice"
+                ]
                 out._lazy_ops["unresolved_slice"] = (
-                    curr_start + start,
-                    curr_start + end,
+                    curr_origin_translation + start,
+                    curr_origin_translation + end,
+                    curr_origin_translation + origin_translation,
                 )
 
             idx_l = idx_r = None
@@ -2313,13 +2346,15 @@ class LazyInterval(Interval):
             # anything that will end after the start of the slicing window
             idx_r = np.searchsorted(self.start, end)
 
+            origin_translation = start if reset_origin else 0.0
             if "slice" not in self._lazy_ops:
-                out._lazy_ops["slice"] = (idx_l, idx_r, start)
+                out._lazy_ops["slice"] = (idx_l, idx_r, start, origin_translation)
             else:
                 out._lazy_ops["slice"] = (
                     self._lazy_ops["slice"][0] + idx_l,
                     self._lazy_ops["slice"][0] + idx_r,
                     start,
+                    self._lazy_ops["slice"][3] + origin_translation,
                 )
 
         for key in self.keys:
@@ -2333,7 +2368,7 @@ class LazyInterval(Interval):
                         "to load. This is an edge case that was not handled."
                     )
                 out.__dict__[key] = value[idx_l:idx_r].copy()
-                if key in self._timekeys:
+                if reset_origin and key in self._timekeys:
                     out.__dict__[key] = out.__dict__[key] - start
 
         if "mask" in self._lazy_ops:
@@ -2615,7 +2650,7 @@ class Data(object):
         """
         return self._absolute_start if self.domain is not None else None
 
-    def slice(self, start: float, end: float):
+    def slice(self, start: float, end: float, reset_origin: bool = True):
         r"""Returns a new :obj:`Data` object that contains the data between the start
         and end times. This method will slice all time-based attributes that are present
         in the data object.
@@ -2623,6 +2658,8 @@ class Data(object):
         Args:
             start: Start time.
             end: End time.
+            reset_origin: If :obj:`True`, all time attributes will be updated to be
+                relative to the new start time. Defaults to :obj:`True`.
         """
         if self.domain is None:
             raise ValueError(
@@ -2638,17 +2675,18 @@ class Data(object):
                 isinstance(value, (IrregularTimeSeries, RegularTimeSeries, Interval))
                 or (isinstance(value, Data) and value.domain is not None)
             ):
-                out.__dict__[key] = value.slice(start, end)
+                out.__dict__[key] = value.slice(start, end, reset_origin)
             else:
                 out.__dict__[key] = copy.copy(value)
 
         # update domain
         out._domain = copy.copy(self._domain) & Interval(start, end)
-        out._domain.start -= start
-        out._domain.end -= start
+        if reset_origin:
+            out._domain.start -= start
+            out._domain.end -= start
 
-        # update slice start time
-        out._absolute_start = self._absolute_start + start
+            # update slice start time
+            out._absolute_start = self._absolute_start + start
 
         return out
 
