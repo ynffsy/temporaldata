@@ -589,6 +589,11 @@ class IrregularTimeSeries(ArrayDict):
             raise ValueError(f"domain must be an Interval object, got {type(value)}.")
         self._domain = value
 
+    @property
+    def timekeys(self):
+        r"""List of all time-based attributes."""
+        return self._timekeys
+
     def __setattr__(self, name, value):
         super(IrregularTimeSeries, self).__setattr__(name, value)
 
@@ -1242,6 +1247,11 @@ class RegularTimeSeries(ArrayDict):
         r"""Returns the domain of the time series."""
         return self._domain
 
+    @property
+    def timekeys(self):
+        r"""List of all time-based attributes."""
+        return self._timekeys
+
     def select_by_mask(self, mask: np.ndarray):
         raise NotImplementedError("Not implemented for RegularTimeSeries.")
 
@@ -1595,6 +1605,11 @@ class Interval(ArrayDict):
             assert key in self.keys, f"Time attribute {key} not found in data."
 
         self._timekeys = timekeys
+
+    @property
+    def timekeys(self):
+        r"""List of all time-based attributes."""
+        return self._timekeys
 
     def __setattr__(self, name, value):
         super(Interval, self).__setattr__(name, value)
