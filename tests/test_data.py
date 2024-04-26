@@ -361,6 +361,28 @@ def test_irregular_timeseries_select_by_interval():
     assert np.allclose(data.domain.end, selection_interval.end)
 
 
+def test_interval_select_by_interval():
+    data = Interval(
+        start=np.array([0.0, 1, 2]),
+        end=np.array([1, 2, 3]),
+        go_cue_time=np.array([0.5, 1.5, 2.5]),
+        drifting_gratings_dir=np.array([0, 45, 90]),
+        timekeys=["start", "end", "go_cue_time"],
+    )
+
+    selection_interval = Interval(
+        start=np.array([0.2, 2.5]),
+        end=np.array([0.4, 3.12]),
+    )
+    data = data.select_by_interval(selection_interval)
+
+    assert len(data) == 2
+    assert np.allclose(data.start, np.array([0.0, 2.0]))
+    assert np.allclose(data.end, np.array([1.0, 3.0]))
+    assert np.allclose(data.go_cue_time, np.array([0.5, 2.5]))
+    assert np.allclose(data.drifting_gratings_dir, np.array([0, 90]))
+
+
 def test_irregular_timeseries_lazy_select_by_interval(test_filepath):
     data = IrregularTimeSeries(
         unit_index=np.array([0, 0, 1, 0, 1, 2]),

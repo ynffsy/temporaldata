@@ -1703,6 +1703,24 @@ class Interval(ArrayDict):
         out._sorted = self._sorted
         return out
 
+    def select_by_interval(self, interval: Interval):
+        r"""Return a new :obj:`IrregularTimeSeries` object where all timestamps are
+        within the interval.
+
+        Args:
+            interval: Interval object.
+        """
+
+        idx_l = np.searchsorted(self.end, interval.start, side="right")
+        idx_r = np.searchsorted(self.start, interval.end)
+
+        mask = np.zeros(len(self), dtype=bool)
+        for i in range(len(interval)):
+            mask[idx_l[i] : idx_r[i]] = True
+
+        out = self.select_by_mask(mask)
+        return out
+
     def dilate(self, size: float, max_len=None):
         r"""Dilates the intervals by a given size. The dilation is performed in both
         directions. This operation is designed to not create overlapping intervals,
@@ -2721,6 +2739,36 @@ class Data(object):
             # update slice start time
             out._absolute_start = self._absolute_start + start
 
+        return out
+
+    def select_by_interval(self, interval: Interval):
+        r"""Return a new :obj:`IrregularTimeSeries` object where all timestamps are
+        within the interval.
+
+        Args:
+            interval: Interval object.
+        """
+        if self.domain is None:
+            raise ValueError(
+                "Data object does not contain any time-based attributes, "
+                "and can thus not be sliced."
+            )
+
+        out = self.__class__.__new__(self.__class__)
+
+        for key, value in self.__dict__.items():
+            # todo update domain
+            if key != "_domain" and (
+                isinstance(value, (IrregularTimeSeries, RegularTimeSeries, Interval))
+                or (isinstance(value, Data) and value.domain is not None)
+            ):
+                if isinstance(value, RegularTimeSeries):
+                    value = value.to_irregular()
+                out.__dict__[key] = value.select_by_interval(interval)
+            else:
+                out.__dict__[key] = copy.copy(value)
+
+        out._domain = self._domain & interval
         return out
 
     def __repr__(self) -> str:
