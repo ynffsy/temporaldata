@@ -1,6 +1,6 @@
 import pytest
 import numpy as np
-from kirby.data import IrregularTimeSeries, concat
+from data import IrregularTimeSeries, concat
 
 
 def test_irregular_timeseries_concat():

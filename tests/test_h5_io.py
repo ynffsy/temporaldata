@@ -3,7 +3,7 @@ import os
 import h5py
 import numpy as np
 import tempfile
-from kirby.data.data import RegularTimeSeries, IrregularTimeSeries, Interval, Data
+from data import RegularTimeSeries, IrregularTimeSeries, Interval, Data
 
 
 @pytest.fixture

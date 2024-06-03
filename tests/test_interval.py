@@ -1,6 +1,6 @@
 import pytest
 import numpy as np
-from kirby.data import Interval
+from data import Interval
 
 
 # def test_indexing():
