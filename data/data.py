@@ -8,7 +8,6 @@ import logging
 import h5py
 import numpy as np
 import pandas as pd
-import torch
 
 
 class ArrayDict(object):
@@ -2973,11 +2972,7 @@ class Data(object):
 
 def size_repr(key: Any, value: Any, indent: int = 0) -> str:
     pad = " " * indent
-    if isinstance(value, torch.Tensor) and value.dim() == 0:
-        out = value.item()
-    elif isinstance(value, torch.Tensor):
-        out = str(list(value.size()))
-    elif isinstance(value, np.ndarray):
+    if isinstance(value, np.ndarray):
         out = str(list(value.shape))
     elif isinstance(value, str):
         out = f"'{value}'"
