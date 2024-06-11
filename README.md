@@ -1,4 +1,4 @@
-# temporaldata
+# ⏳ temporaldata
 
 **temporaldata** is a Python package for easily working with temporal data. It provides
 advanced data structures and methods to work with multi-modal, multi-resolution 
