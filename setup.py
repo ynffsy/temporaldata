@@ -10,10 +10,18 @@ setup(
     long_description_content_type="text/markdown",
     packages=find_packages(),
     install_requires=[
+        "setuptools~=60.2.0",
         "numpy~=1.23.5",
         "pandas~=1.5.3",
         "h5py~=3.8.0",
     ],
+    extras_require={
+        "dev": [
+            "pytest~=7.2.1",
+            "black==24.2.0",
+            "pre-commit==3.6.2",
+        ],
+    },
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",
