@@ -3,7 +3,7 @@ import os
 import h5py
 import numpy as np
 import tempfile
-from data import RegularTimeSeries, IrregularTimeSeries, Interval, Data
+from temporaldata import RegularTimeSeries, IrregularTimeSeries, Interval, Data
 
 
 @pytest.fixture

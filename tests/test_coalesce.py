@@ -1,6 +1,6 @@
 import pytest
 import numpy as np
-from data import Interval
+from temporaldata import Interval
 
 
 def test_interval_coalesce():

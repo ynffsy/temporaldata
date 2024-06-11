@@ -1,7 +1,7 @@
 from functools import reduce
 import numpy as np
 
-from .data import ArrayDict, IrregularTimeSeries, Interval, RegularTimeSeries
+from .temporaldata import ArrayDict, IrregularTimeSeries, Interval, RegularTimeSeries
 
 
 def concat(objs, sort=True):

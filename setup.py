@@ -1,10 +1,10 @@
 from setuptools import find_packages, setup
 
 setup(
-    name="data",
+    name="temporaldata",
     version="0.1.0",
     author="Mehdi Azabou",
-    author_email="mazabou@gatech.edu",
+    author_email="mehdiazabou@gmail.com",
     description="A utility package for complex temporal data manipulation",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
