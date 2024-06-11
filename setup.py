@@ -20,6 +20,7 @@ setup(
             "pytest~=7.2.1",
             "black==24.2.0",
             "pre-commit==3.6.2",
+            "flake8",
         ],
     },
     classifiers=[

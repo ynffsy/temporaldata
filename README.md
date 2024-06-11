@@ -18,7 +18,7 @@ pip install -e .
 If you are planning to contribute to the package, you can install the package in
 development mode by running the following command:
 ```bash
-pip install -e .[dev]
+pip install -e ".[dev]"
 ```
 
 Install pre-commit hooks:
