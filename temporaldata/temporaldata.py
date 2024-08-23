@@ -1258,6 +1258,26 @@ class RegularTimeSeries(ArrayDict):
                 start=np.array([domain_start]),
                 end=np.array([domain_start + (len(self) - 1) / sampling_rate]),
             )
+        elif isinstance(domain, Interval):
+            if not len(domain) == 1:
+                raise ValueError(
+                    f"A RegularTimeSeries timeseries object should be contiguous, and "
+                    f"its domain must be a single interval, got {len(domain)} intervals"
+                    f" in domain."
+                )
+            if domain.end[0] - domain.start[0] != (len(self) - 1) / sampling_rate:
+                raise ValueError(
+                    f"Domain length does not match the length of the time series. "
+                    f"Expected {len(self) / sampling_rate} seconds, got a domain with "
+                    f"{domain.end[0] - domain.start[0]} seconds."
+                    f"For a RegularTimeSeries, it is recommanded to use domain=`auto` "
+                    f"and to specify domain_start."
+                )
+        else:
+            raise ValueError(
+                f"domain must be an Interval object or 'auto', got {type(domain)}."
+            )
+
         self._domain = domain
 
     @property
