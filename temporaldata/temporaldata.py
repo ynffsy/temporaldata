@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Mapping, Sequence
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union, Callable, Optional, Type
+import collections
 import logging
+import warnings
 
 import h5py
 import numpy as np
@@ -106,7 +108,12 @@ class ArrayDict(object):
 
     def __repr__(self) -> str:
         cls = self.__class__.__name__
-        info = [size_repr(k, self.__dict__[k], indent=2) for k in self.keys]
+        hidden_keys = ["train_mask", "valid_mask", "test_mask"]
+        info = [
+            size_repr(k, self.__dict__[k], indent=2)
+            for k in self.keys
+            if k not in hidden_keys
+        ]
         info = ",\n".join(info)
         return f"{cls}(\n{info}\n)"
 
@@ -606,6 +613,8 @@ class IrregularTimeSeries(ArrayDict):
         if name == "timestamps":
             assert value.ndim == 1, "timestamps must be 1D."
             assert ~np.any(np.isnan(value)), f"timestamps cannot contain NaNs."
+            if value.dtype != np.float64:
+                logging.warning(f"{name} is of type {value.dtype} not of type float64.")
             # timestamps has been updated, we no longer know whether it is sorted or not
             self._sorted = None
 
@@ -621,17 +630,17 @@ class IrregularTimeSeries(ArrayDict):
         r"""Returns the start time of the time series. If the time series is not sorted,
         the start time is the minimum timestamp."""
         if self.is_sorted():
-            return self.timestamps[0]
+            return np.float64(self.timestamps[0])
         else:
-            return np.min(self.timestamps)
+            return np.float64(np.min(self.timestamps))
 
     def _maybe_end(self) -> float:
         r"""Returns the end time of the time series. If the time series is not sorted,
         the end time is the maximum timestamp."""
         if self.is_sorted():
-            return self.timestamps[-1]
+            return np.float64(self.timestamps[-1])
         else:
-            return np.max(self.timestamps)
+            return np.float64(np.max(self.timestamps))
 
     def sort(self):
         r"""Sorts the timestamps, and reorders the other attributes accordingly.
@@ -820,7 +829,10 @@ class IrregularTimeSeries(ArrayDict):
         # irregularly sampled timestamps
         # we use a 1 second resolution
         grid_timestamps = np.arange(
-            self.domain.start[0], self.domain.end[-1] + 1.0, 1.0
+            self.domain.start[0],
+            self.domain.end[-1] + 1.0,
+            1.0,
+            dtype=np.float64,
         )
         file.create_dataset(
             "timestamp_indices_1s",
@@ -1230,16 +1242,21 @@ class RegularTimeSeries(ArrayDict):
         *,
         sampling_rate: float,  # in Hz
         domain: Interval = None,
+        domain_start=0.0,
         **kwargs: Dict[str, np.ndarray],
     ):
         super().__init__(**kwargs)
 
         self._sampling_rate = sampling_rate
 
-        # TODO add a start argument to simplify domain
         if domain == "auto":
+            if not isinstance(domain_start, (int, float)):
+                raise ValueError(
+                    f"domain_start must be a number, got {type(domain_start)}."
+                )
             domain = Interval(
-                start=np.array([0.0]), end=np.array([(len(self) - 1) / sampling_rate])
+                start=np.array([domain_start]),
+                end=np.array([domain_start + (len(self) - 1) / sampling_rate]),
             )
         self._domain = domain
 
@@ -1277,14 +1294,12 @@ class RegularTimeSeries(ArrayDict):
         if start < self.domain.start[0]:
             start_id = 0
         else:
-            start_id = int(
-                np.round((start - self.domain.start[0]) * self.sampling_rate)
-            )
+            start_id = int(np.ceil((start - self.domain.start[0]) * self.sampling_rate))
 
         if end > self.domain.end[0]:
             end_id = len(self) + 1
         else:
-            end_id = int(np.round((end - self.domain.start[0]) * self.sampling_rate))
+            end_id = int(np.floor((end - self.domain.start[0]) * self.sampling_rate))
 
         out = self.__class__.__new__(self.__class__)
         out._sampling_rate = self.sampling_rate
@@ -1327,14 +1342,14 @@ class RegularTimeSeries(ArrayDict):
                 start_id = 0
             else:
                 start_id = int(
-                    np.round((start - self.domain.start[0]) * self.sampling_rate)
+                    np.ceil((start - self.domain.start[0]) * self.sampling_rate)
                 )
 
             if end > self.domain.end[0]:
                 end_id = len(self) + 1
             else:
                 end_id = int(
-                    np.round((end - self.domain.start[0]) * self.sampling_rate)
+                    np.floor((end - self.domain.start[0]) * self.sampling_rate)
                 )
 
             assert not np.any(mask_array[start_id:end_id])
@@ -1353,7 +1368,10 @@ class RegularTimeSeries(ArrayDict):
     @property
     def timestamps(self):
         r"""Returns the timestamps of the time series."""
-        return self.domain.start[0] + np.arange(len(self)) / self.sampling_rate
+        return (
+            self.domain.start[0]
+            + np.arange(len(self), dtype=np.float64) / self.sampling_rate
+        )
 
     def to_hdf5(self, file):
         r"""Saves the data object to an HDF5 file.
@@ -1653,6 +1671,8 @@ class Interval(ArrayDict):
         if name == "start" or name == "end":
             assert value.ndim == 1, f"{name} must be 1D."
             assert ~np.any(np.isnan(value)), f"{name} cannot contain NaNs."
+            if value.dtype != np.float64:
+                logging.warning(f"{name} is of type {value.dtype} not of type float64.")
             # start or end have been updated, we no longer know whether it is sorted
             # or not
             self._sorted = None
@@ -2009,7 +2029,7 @@ class Interval(ArrayDict):
                 end=[100]
                 )
         """
-        timestamps = np.linspace(start, end, steps + 1)
+        timestamps = np.linspace(start, end, steps + 1, dtype=np.float64)
         return cls(
             start=timestamps[:-1],
             end=timestamps[1:],
@@ -2029,7 +2049,9 @@ class Interval(ArrayDict):
             include_end: Whether to include a partial interval at the end.
         """
         whole_steps = np.floor((end - start) / step).astype(int)
-        timestamps = np.linspace(start, start + whole_steps * step, whole_steps + 1)
+        timestamps = np.linspace(
+            start, start + whole_steps * step, whole_steps + 1, dtype=np.float64
+        )
 
         if include_end and timestamps[-1] < end:
             timestamps = np.append(timestamps, end)
@@ -2958,6 +2980,7 @@ class Data(object):
     """
 
     _absolute_start = 0.0
+    _domain = None
 
     def __init__(
         self,
@@ -2966,7 +2989,18 @@ class Data(object):
         **kwargs: Dict[str, Union[str, float, int, np.ndarray, ArrayDict]],
     ):
         if domain == "auto":
-            domain = ...  # TODO: join all existing domains
+            # the domain is the union of the domains of the attributes
+            domain = Interval(np.array([]), np.array([]))
+            for key, value in kwargs.items():
+                if isinstance(value, (IrregularTimeSeries, RegularTimeSeries)):
+                    domain = domain | value.domain
+                if isinstance(value, Interval):
+                    domain = domain | value
+                if isinstance(value, Data) and value.domain is not None:
+                    domain = domain | value.domain
+
+        if domain is not None and not isinstance(domain, Interval):
+            raise ValueError("domain must be an Interval object.")
 
         self._domain = domain
 
@@ -3106,11 +3140,12 @@ class Data(object):
         return out
 
     def __repr__(self) -> str:
-        # TODO hide _domain
         cls = self.__class__.__name__
 
         info = ""
         for key, value in self.__dict__.items():
+            if key == "_domain":
+                continue
             if isinstance(value, ArrayDict):
                 info = info + key + "=" + repr(value) + ",\n"
             elif value is not None:
@@ -3122,7 +3157,7 @@ class Data(object):
         r"""Returns a dictionary of stored key/value pairs."""
         return copy.deepcopy(self.__dict__)
 
-    def to_hdf5(self, file):
+    def to_hdf5(self, file, serialize_fn_map=None):
         r"""Saves the data object to an HDF5 file. This method will also call the
         `to_hdf5` method of all contained data objects, so that the entire data object
         is saved to the HDF5 file, i.e. no need to call `to_hdf5` for each contained
@@ -3145,7 +3180,10 @@ class Data(object):
             value = getattr(self, key)
             if isinstance(value, (Data, ArrayDict)):
                 grp = file.create_group(key)
-                value.to_hdf5(grp)
+                if isinstance(value, Data):
+                    value.to_hdf5(grp, serialize_fn_map=serialize_fn_map)
+                else:
+                    value.to_hdf5(grp)
             elif isinstance(value, np.ndarray):
                 # todo add warning if array is too large
                 # recommend using ArrayDict
@@ -3153,15 +3191,15 @@ class Data(object):
             elif value is not None:
                 # each attribute should be small (generally < 64k)
                 # there is no partial I/O; the entire attribute must be read
+                value = serialize(value, serialize_fn_map=serialize_fn_map)
                 file.attrs[key] = value
-
-        # TODO save _absolute_start
 
         if self._domain is not None:
             grp = file.create_group("domain")
             self._domain.to_hdf5(grp)
 
-        file.attrs["object"] = self.__class__.__name__
+        file.attrs["object"] = "Data"
+        file.attrs["absolute_start"] = self._absolute_start
 
     @classmethod
     def from_hdf5(cls, file, lazy=True):
@@ -3204,11 +3242,15 @@ class Data(object):
                 data[key] = value[:]
 
         for key, value in file.attrs.items():
-            if key == "object":
+            if key == "object" or key == "absolute_start":
                 continue
             data[key] = value
 
         obj = cls(**data)
+
+        # restore the absolute start time
+        obj._absolute_start = file.attrs["absolute_start"]
+
         return obj
 
     def add_split_mask(
@@ -3220,6 +3262,10 @@ class Data(object):
         contained within this Data object.
         """
         for key in self.keys:
+            if key.endswith("_domain"):
+                # domains are not split
+                assert isinstance(getattr(self, key), Interval)
+                continue
             obj = getattr(self, key)
             if isinstance(obj, (RegularTimeSeries, IrregularTimeSeries, Interval)):
                 obj.add_split_mask(name, interval)
@@ -3227,8 +3273,21 @@ class Data(object):
     def _check_for_data_leakage(self, name):
         """Ensure that split masks are all True"""
         for key in self.keys:
-            # TODO fix intervals
+            if key.endswith("_domain"):
+                continue
             if key == "trials":
+                # raise deprecation warning
+                if (
+                    not hasattr(obj, f"{name}_mask")
+                    or not getattr(obj, f"{name}_mask").all()
+                ):
+                    warnings.warn(
+                        "Data leakage was detected in 'trials'. This is a warning, but"
+                        "in the future, this will raise an error. Please update your "
+                        "prepare_data.py script to fix this issue.",
+                        DeprecationWarning,
+                        stacklevel=2,
+                    )
                 continue
             obj = getattr(self, key)
             if isinstance(obj, (IrregularTimeSeries, Interval)):
@@ -3337,3 +3396,40 @@ def size_repr(key: Any, value: Any, indent: int = 0) -> str:
         out = str(value)
     key = str(key).replace("'", "")
     return f"{pad}{key}={out}"
+
+
+def serialize(
+    elem,
+    serialize_fn_map: Optional[Dict[Union[Type, Tuple[Type, ...]], Callable]] = None,
+):
+    r"""
+    General serialization function that handles object types that are not supported
+    by hdf5. The function also opens function registry to deal with specific element
+    types through `serialize_fn_map`. This function will automatically be applied to
+    elements in a nested sequence structure.
+
+    Args:
+        elem: a single element to be serialized.
+        serialize_fn_map: Optional dictionary mapping from element type to the
+            corresponding serialize function. If the element type isn't present in this
+            dictionary, it will be skipped and the element will be returned as is.
+    """
+    elem_type = type(elem)
+
+    if serialize_fn_map is not None:
+        if elem_type in serialize_fn_map:
+            return serialize_fn_map[elem_type](elem, serialize_fn_map=serialize_fn_map)
+
+        for object_type in serialize_fn_map:
+            if isinstance(elem, object_type):
+                return serialize_fn_map[object_type](
+                    elem, serialize_fn_map=serialize_fn_map
+                )
+
+    if isinstance(elem, (list, tuple)):
+        return elem_type(
+            [serialize(e, serialize_fn_map=serialize_fn_map) for e in elem]
+        )
+
+    # element does not need to be seralized, or type not supported
+    return elem
