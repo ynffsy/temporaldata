@@ -2603,8 +2603,7 @@ class Data(object):
      But also regular objects like sclars, strings and numpy arrays.
 
     Args:
-        start: Start time.
-        end: End time.
+        domain: The domain of the data object. If set to "auto", the domain will be the union of the domains of the attributes.
         **kwargs: Arbitrary attributes.
 
     .. code-block:: python
