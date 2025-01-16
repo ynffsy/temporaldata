@@ -38,3 +38,22 @@ def test_data():
 
     assert np.allclose(data.domain.start, np.array([0, 5]))
     assert np.allclose(data.domain.end, np.array([3.996, 6]))
+
+
+def test_auto_domain():
+
+    # Create a 10 second long regular time series with auto domain
+    data_auto = Data(
+        session_id="session_0",
+        domain='auto',
+        eeg=RegularTimeSeries(
+            raw=np.zeros((2500, 3)),
+            sampling_rate=250.0,
+            domain_start=0.0,
+            domain="auto",
+        ),
+    )
+
+    # Check the resulting start and end of the auto domain
+    assert data_auto.domain.start[0] == 0.0
+    assert data_auto.domain.end[0] == 10.0
