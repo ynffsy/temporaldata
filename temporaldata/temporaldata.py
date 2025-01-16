@@ -1214,7 +1214,7 @@ class RegularTimeSeries(ArrayDict):
     Args:
         sampling_rate: Sampling rate in Hz.
         domain: an :obj:`Interval` object that defines the domain over which the
-            timeseries is defined. It is not possible to set domain to :obj:`"auto"`.
+            timeseries is defined. Set to :obj:`"auto"` to automatically set the domain to the entire sequence. 
         **kwargs: Arbitrary keyword arguments where the values are arbitrary
             multi-dimensional (2d, 3d, ..., nd) arrays with shape (N, \*).
 
@@ -1222,7 +1222,7 @@ class RegularTimeSeries(ArrayDict):
     .. code-block:: python
 
         import numpy as np
-        from temporaldata import RegularTimeSeries
+        from temporaldata import RegularTimeSeries, Interval
 
         lfp = RegularTimeSeries(
             raw=np.zeros((1000, 128)),
