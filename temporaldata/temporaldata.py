@@ -2344,16 +2344,19 @@ class Interval(ArrayDict):
             with h5py.File("data.h5", "r") as f:
                 interval = Interval.from_hdf5(f)
         """
-        assert file.attrs["object"] == Interval.__name__, "object type mismatch"
-
-        obj = cls.__new__(cls)
+        assert file.attrs["object"] == cls.__name__, "object type mismatch"
+        data = {}
+        _unicode_keys = file.attrs["_unicode_keys"].astype(str).tolist()
         for key, value in file.items():
-            obj.__dict__[key] = value
+            data[key] = value[:]
+            # if the values were originally unicode but stored as fixed length ASCII bytes
+            if key in _unicode_keys:
+                data[key] = data[key].astype("U")
+        timekeys = file.attrs["timekeys"].astype(str).tolist()
+        obj = cls(**data, timekeys=timekeys)
 
-        obj._unicode_keys = file.attrs["_unicode_keys"].astype(str).tolist()
-        obj._timekeys = file.attrs["timekeys"].astype(str).tolist()
-        obj._sorted = True
-        obj._lazy_ops = {}
+        if file.attrs["allow_split_mask_overlap"]:
+            obj.allow_split_mask_overlap()
 
         return obj
 

@@ -1292,6 +1292,8 @@ def test_lazy_data_copy(test_filepath):
         # ArrayDict object, this will change in the future.
         # because some_numpy_array is not a h5py dataset, changing it will affect
         # the original object
+        assert isinstance(data.__dict__["some_numpy_array"], np.ndarray)
+        # this is a shallow copy, so the original object should be modified
         assert data.some_numpy_array[0] == 10
 
         assert isinstance(data.spikes.__dict__["unit_index"], h5py.Dataset)
