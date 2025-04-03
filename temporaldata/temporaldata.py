@@ -3040,6 +3040,11 @@ class Data(object):
         self.test_domain = interval
         self.add_split_mask("test", interval)
 
+    def set_trial_domain(self, interval: Interval):
+        """Set the trial domain for all attributes."""
+        self.trial_domain = interval
+        self.add_split_mask("trial", interval)
+
     def add_split_mask(
         self,
         name: str,
